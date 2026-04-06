@@ -1,0 +1,9 @@
+images/
+logs/
+artifacts/
+build/
+src/*
+!src/.gitignore
+*.pid
+*.port
+.DS_Store
