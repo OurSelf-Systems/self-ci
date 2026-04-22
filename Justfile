@@ -23,13 +23,15 @@ NCPU := `sysctl -n hw.ncpu 2>/dev/null || echo 4`
 UBUNTU_ARM64_QCOW  := 'images/ubuntu-arm64.qcow2'
 UBUNTU_AMD64_QCOW  := 'images/ubuntu-amd64.qcow2'
 
-# vm platforms (32-bit multilib on AMD64)
-UBUNTU_MULTILIB_QCOW := 'images/ubuntu-amd64-multilib.qcow2'
+# vm platforms (32-bit, AMD64 host with multilib support)
+UBUNTU_MULTILIB_QCOW  := 'images/ubuntu-amd64-multilib.qcow2'
+FREEBSD_LIB32_QCOW := 'images/freebsd-amd64-lib32.qcow2'
 
 # ─── Download URLs ────────────────────────────────────────
 
 UBUNTU_ARM64_URL   := 'https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img'
 UBUNTU_AMD64_URL   := 'https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img'
+FREEBSD_AMD64_URL  := 'https://download.freebsd.org/releases/VM-IMAGES/15.0-RELEASE/amd64/Latest/FreeBSD-15.0-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz'
 
 # ─── Default ──────────────────────────────────────────────
 
@@ -165,6 +167,7 @@ fullrun-vm32:
     START=$SECONDS
 
     just vm32-ubuntu-amd64 && RESULTS+=("vm32-ubuntu-amd64: PASS") || { RESULTS+=("vm32-ubuntu-amd64: FAIL"); FAILS=$((FAILS + 1)); }
+    just vm32-freebsd-amd64-lib32 && RESULTS+=("vm32-freebsd-amd64-lib32: PASS") || { RESULTS+=("vm32-freebsd-amd64-lib32: FAIL"); FAILS=$((FAILS + 1)); }
 
     ELAPSED=$((SECONDS - START))
     echo ""
@@ -284,6 +287,30 @@ vm32-ubuntu-amd64:
     fi
     exit $result
 
+# Build and test vm32 on FreeBSD AMD64 lib32
+[group('vm32')]
+vm32-freebsd-amd64-lib32:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _check-src
+    just start-freebsd-amd64-lib32
+    PORT=$(cat freebsd-amd64-lib32.port)
+    result=0
+    just _vm32-compile-freebsd-amd64-lib32 "$PORT" || result=$?
+    if [ $result -eq 0 ]; then
+        mkdir -p artifacts
+        sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -P "$PORT" \
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm32-freebsd-amd64-lib32"
+    fi
+    just stop-freebsd-amd64-lib32
+    if [ $result -eq 0 ]; then
+        just _pass "vm32-freebsd-amd64-lib32"
+    else
+        just _fail "vm32-freebsd-amd64-lib32"
+    fi
+    exit $result
+
 # ═══════════════════════════════════════════════════════════
 #  vm64 Compile (internal)
 # ═══════════════════════════════════════════════════════════
@@ -335,13 +362,22 @@ _vm32-compile-ubuntu-amd64 port:
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap --runAutomaticTests --headless'
     @just _banner "Finished vm32 on Ubuntu AMD64"
 
+_vm32-compile-freebsd-amd64-lib32 port:
+    @just _action "Compiling vm32 on FreeBSD i386 chroot"
+    @just _rsync {{port}}
+    @just do {{port}} 'sudo chroot /compat/i386 /bin/sh -c "cd /tmp/self-build && cmake -S vm -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ && cmake --build build -j$(sysctl -n hw.ncpu)"'
+    @just do {{port}} 'sudo chroot /compat/i386 /bin/sh -c "cd /tmp/self-build/objects && echo \"saveAs: '"'"'auto.snap'"'"'. _Quit\" | ../build/Self -f worldBuilder.self -o morphic"'
+    @just do {{port}} 'sudo chroot /compat/i386 /bin/sh -c "cd /tmp/self-build && echo _Quit | build/Self -s objects/auto.snap"'
+    @just do {{port}} 'sudo chroot /compat/i386 /bin/sh -c "cd /tmp/self-build && build/Self -s objects/auto.snap --runAutomaticTests --headless"'
+    @just _banner "Finished vm32 on FreeBSD i386 chroot"
+
 # ═══════════════════════════════════════════════════════════
 #  Provision — Download and provision VM images
 # ═══════════════════════════════════════════════════════════
 
 # Download and provision all VM images
 [group('Provision')]
-provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib
+provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib provision-freebsd-amd64-lib32
     @just _banner "All images ready"
 
 # Download and provision Ubuntu ARM64
@@ -419,6 +455,44 @@ provision-ubuntu-amd64-multilib:
         -nic user,hostfwd=tcp::${PORT}-:22 \
         -nographic
     just _banner "Ubuntu AMD64 multilib image ready"
+
+# Download and provision FreeBSD AMD64 lib32 (vm 32-bit builds)
+#
+# nuageinit only runs on first boot of a fresh image — it has no concept of
+# re-running for a new instance-id like Python cloud-init does. So provision
+# always starts from a pristine qcow2 by re-extracting the cached .xz.
+[group('Provision')]
+provision-freebsd-amd64-lib32:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p images
+    xz_cache="images/freebsd-amd64.qcow2.xz"
+    if [ ! -f "$xz_cache" ]; then
+        just _action "Downloading FreeBSD AMD64 cloud-init image"
+        curl -L -o "$xz_cache" "{{FREEBSD_AMD64_URL}}"
+    else
+        echo "Cached download already exists: $xz_cache"
+    fi
+    just _action "Extracting fresh qcow2 from cached download"
+    rm -f "{{FREEBSD_LIB32_QCOW}}"
+    xz -dk -c "$xz_cache" > "{{FREEBSD_LIB32_QCOW}}"
+    qemu-img resize "{{FREEBSD_LIB32_QCOW}}" 20G
+    just _create-cloud-init-freebsd-amd64-lib32
+    just _action "Provisioning FreeBSD AMD64 lib32 via cloud-init"
+    PORT=$(just _free-port)
+    qemu-system-x86_64 \
+        -machine q35 -cpu qemu64 \
+        -m 4G -smp 2 \
+        -drive file={{FREEBSD_LIB32_QCOW}},if=virtio \
+        -drive file=images/cloud-init-freebsd-amd64-lib32.iso,if=ide,media=cdrom \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile freebsd-amd64-lib32-provision.pid \
+        -display none -daemonize
+    just _action "Waiting for nuageinit to finish (sshd will come up when done)"
+    just _wait-for-ssh "$PORT"
+    just _action "Provisioning complete — shutting down VM via SSH"
+    just _stop-vm freebsd-amd64-lib32-provision.pid "$PORT"
+    just _banner "FreeBSD AMD64 lib32 image ready"
 
 # ═══════════════════════════════════════════════════════════
 #  Environment
@@ -574,6 +648,32 @@ stop-ubuntu-amd64-multilib:
     just _stop-vm ubuntu-amd64-multilib.pid "$port"
     rm -f ubuntu-amd64-multilib.port
 
+# Boot FreeBSD AMD64 lib32 VM (snapshot mode, for 32-bit vm builds)
+[group('Advanced')]
+start-freebsd-amd64-lib32:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Starting FreeBSD AMD64 lib32 VM"
+    PORT=$(just _free-port)
+    echo "$PORT" > freebsd-amd64-lib32.port
+    qemu-system-x86_64 \
+        -machine q35 -cpu qemu64 \
+        -m 4G -smp 2 \
+        -drive file={{FREEBSD_LIB32_QCOW}},if=virtio,snapshot=on \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile freebsd-amd64-lib32.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _banner "FreeBSD AMD64 lib32 VM running on port $PORT"
+
+# Shut down FreeBSD AMD64 lib32 VM
+[group('Advanced')]
+stop-freebsd-amd64-lib32:
+    #!/usr/bin/env bash
+    port=$(cat freebsd-amd64-lib32.port 2>/dev/null || echo "0")
+    just _stop-vm freebsd-amd64-lib32.pid "$port"
+    rm -f freebsd-amd64-lib32.port
+
 # Execute command on a running VM via SSH
 [group('Advanced')]
 do port *ARGS:
@@ -589,6 +689,13 @@ do port *ARGS:
     sshpass -p ci ssh ci@localhost -p {{port}} \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR "($CMD) 2>&1"
+
+# Attach an interactive terminal to a running VM via SSH
+[group('Advanced')]
+term port:
+    sshpass -p ci ssh -t ci@localhost -p {{port}} \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR
 
 # Delete all images and logs
 [group('Advanced')]
@@ -616,23 +723,23 @@ _rsync port:
 
 _wait-for-ssh port:
     #!/usr/bin/env bash
-    for i in $(seq 1 60); do
+    for i in $(seq 1 180); do
         if sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=5 -o LogLevel=ERROR -p {{port}} ci@localhost "echo ready" 2>/dev/null; then
             exit 0
         fi
         sleep 2
     done
-    echo "ERROR: SSH not available on port {{port}} after 120 seconds"
+    echo "ERROR: SSH not available on port {{port}} after 360 seconds"
     exit 1
 
 _stop-vm pidfile port:
     #!/usr/bin/env bash
     sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -o LogLevel=ERROR -p {{port}} ci@localhost "sudo poweroff" 2>/dev/null || true
+        -o LogLevel=ERROR -p {{port}} ci@localhost "sudo sync; sudo sync; sudo poweroff" 2>/dev/null || true
     if [ -f {{pidfile}} ]; then
         pid=$(cat {{pidfile}})
-        for i in $(seq 1 30); do
+        for i in $(seq 1 120); do
             ps -p "$pid" > /dev/null 2>&1 || break
             sleep 1
         done
@@ -797,6 +904,69 @@ _create-cloud-init-amd64-multilib:
       mode: poweroff
       message: "Provisioning complete, shutting down"
       condition: true
+    EOF
+    if command -v mkisofs &>/dev/null; then
+        mkisofs -output "$iso" -volid cidata -joliet -rock "$tmpdir/user-data" "$tmpdir/meta-data"
+    elif command -v hdiutil &>/dev/null; then
+        mkdir -p "$tmpdir/iso_root"
+        cp "$tmpdir/user-data" "$tmpdir/meta-data" "$tmpdir/iso_root/"
+        hdiutil makehybrid -iso -joliet -iso-volume-name cidata -o "$iso" "$tmpdir/iso_root/"
+        [ -f "${iso}.iso" ] && mv "${iso}.iso" "$iso"
+    else
+        echo "ERROR: Cannot create cloud-init ISO (no mkisofs or hdiutil)"
+        echo "Install cdrtools: brew install cdrtools"
+        exit 1
+    fi
+    echo "Created cloud-init ISO: $iso"
+
+_create-cloud-init-freebsd-amd64-lib32:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    iso="images/cloud-init-freebsd-amd64-lib32.iso"
+    rm -f "$iso"
+    mkdir -p images
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+    instance_id="ci-vm-freebsd-amd64-lib32-$(date +%s)"
+    cat > "$tmpdir/meta-data" <<EOF
+    instance-id: $instance_id
+    local-hostname: ci-vm-freebsd-amd64-lib32
+    EOF
+    cat > "$tmpdir/user-data" <<'EOF'
+    #cloud-config
+    users:
+      - name: ci
+        plain_text_passwd: ci
+        lock_passwd: false
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/sh
+        ssh_authorized_keys: []
+
+    ssh_pwauth: true
+
+    package_update: true
+    packages:
+      - rsync
+      - bash
+      - xxd
+      - sudo
+
+    runcmd:
+      - ssh-keygen -A
+      - sed -i '' 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+      - sysrc sshd_enable=YES
+      - fetch -o /tmp/base.txz https://download.freebsd.org/releases/i386/14.4-RELEASE/base.txz
+      - mkdir -p /compat/i386
+      - tar -xf /tmp/base.txz -C /compat/i386
+      - rm /tmp/base.txz
+      - cp /etc/resolv.conf /compat/i386/etc/resolv.conf
+      - echo 'devfs /compat/i386/dev devfs rw 0 0' >> /etc/fstab
+      - echo '/tmp /compat/i386/tmp nullfs rw 0 0' >> /etc/fstab
+      - mount /compat/i386/dev
+      - mount /compat/i386/tmp
+      - env IGNORE_OSVERSION=yes chroot /compat/i386 /bin/sh -c 'env ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes pkg bootstrap -y'
+      - env IGNORE_OSVERSION=yes chroot /compat/i386 /bin/sh -c 'env ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes pkg install -y gcc cmake pkgconf rsync libX11 libXext xorgproto'
+      - service sshd start
     EOF
     if command -v mkisofs &>/dev/null; then
         mkisofs -output "$iso" -volid cidata -joliet -rock "$tmpdir/user-data" "$tmpdir/meta-data"
