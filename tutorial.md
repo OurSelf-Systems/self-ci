@@ -51,6 +51,7 @@ just provision-ubuntu-amd64           # Ubuntu AMD64 (vm64, emulated)
 just provision-ubuntu-amd64-multilib  # Ubuntu AMD64 multilib (vm 32-bit, emulated)
 just provision-freebsd-amd64-multilib # FreeBSD AMD64 multilib (vm 32-bit, emulated)
 just provision-freebsd-arm64          # FreeBSD ARM64 (vm64, hvf-accelerated)
+just provision-freebsd-amd64          # FreeBSD AMD64 (vm64, emulated)
 ```
 
 ### Ubuntu (ARM64 and AMD64)
@@ -82,6 +83,7 @@ just SELFSRC=self64@current vm64-macos-native   # Fastest — no VM, runs direct
 just SELFSRC=self64@current vm64-ubuntu-arm64    # Near-native speed on Apple Silicon
 just SELFSRC=self64@current vm64-ubuntu-amd64    # Emulated, slower
 just SELFSRC=self64@current vm64-freebsd-arm64   # FreeBSD 15 arm64, hvf-accelerated
+just SELFSRC=self64@current vm64-freebsd-amd64   # FreeBSD 15 amd64, emulated
 
 # vm32 (32-bit)
 just SELFSRC=self64@current vm32-ubuntu-amd64    # 32-bit build via multilib on AMD64
