@@ -22,6 +22,7 @@ NCPU := `sysctl -n hw.ncpu 2>/dev/null || echo 4`
 # vm64 platforms
 UBUNTU_ARM64_QCOW  := 'images/ubuntu-arm64.qcow2'
 UBUNTU_AMD64_QCOW  := 'images/ubuntu-amd64.qcow2'
+FREEBSD_ARM64_QCOW := 'images/freebsd-arm64.qcow2'
 
 # vm platforms (32-bit, AMD64 host with multilib support)
 UBUNTU_MULTILIB_QCOW  := 'images/ubuntu-amd64-multilib.qcow2'
@@ -32,6 +33,7 @@ FREEBSD_LIB32_QCOW := 'images/freebsd-amd64-lib32.qcow2'
 UBUNTU_ARM64_URL   := 'https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img'
 UBUNTU_AMD64_URL   := 'https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img'
 FREEBSD_AMD64_URL  := 'https://download.freebsd.org/releases/VM-IMAGES/15.0-RELEASE/amd64/Latest/FreeBSD-15.0-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz'
+FREEBSD_ARM64_URL  := 'https://download.freebsd.org/releases/VM-IMAGES/15.0-RELEASE/aarch64/Latest/FreeBSD-15.0-RELEASE-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2.xz'
 
 # ─── Default ──────────────────────────────────────────────
 
@@ -136,6 +138,7 @@ fullrun-vm64:
     just vm64-macos-native && RESULTS+=("vm64-macos-native: PASS") || { RESULTS+=("vm64-macos-native: FAIL"); FAILS=$((FAILS + 1)); }
     just vm64-ubuntu-arm64 && RESULTS+=("vm64-ubuntu-arm64: PASS") || { RESULTS+=("vm64-ubuntu-arm64: FAIL"); FAILS=$((FAILS + 1)); }
     just vm64-ubuntu-amd64 && RESULTS+=("vm64-ubuntu-amd64: PASS") || { RESULTS+=("vm64-ubuntu-amd64: FAIL"); FAILS=$((FAILS + 1)); }
+    just vm64-freebsd-arm64 && RESULTS+=("vm64-freebsd-arm64: PASS") || { RESULTS+=("vm64-freebsd-arm64: FAIL"); FAILS=$((FAILS + 1)); }
 
     ELAPSED=$((SECONDS - START))
     echo ""
@@ -259,6 +262,30 @@ vm64-ubuntu-amd64:
     fi
     exit $result
 
+# Build and test vm64 on FreeBSD ARM64
+[group('vm64')]
+vm64-freebsd-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _check-src
+    just start-freebsd-arm64
+    PORT=$(cat freebsd-arm64.port)
+    result=0
+    just _vm64-compile-freebsd-arm64 "$PORT" || result=$?
+    if [ $result -eq 0 ]; then
+        mkdir -p artifacts
+        sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -P "$PORT" \
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm64-freebsd-arm64"
+    fi
+    just stop-freebsd-arm64
+    if [ $result -eq 0 ]; then
+        just _pass "vm64-freebsd-arm64"
+    else
+        just _fail "vm64-freebsd-arm64"
+    fi
+    exit $result
+
 # ═══════════════════════════════════════════════════════════
 #  vm32 Build + Test
 # ═══════════════════════════════════════════════════════════
@@ -349,6 +376,16 @@ _vm64-compile-ubuntu-amd64 port:
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
     @just _banner "Finished vm64 on Ubuntu AMD64"
 
+_vm64-compile-freebsd-arm64 port:
+    @just _action "Compiling vm64 on FreeBSD ARM64"
+    @just _rsync {{port}}
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm64 -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF && rm -f build/incls/_precompiled.hh.gch && cmake --build build -j$(sysctl -n hw.ncpu)'
+    @just do {{port}} 'cd /tmp/self-build && build/Self --vm-run-tests'
+    @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap64'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
+    @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap64'
+    @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
+    @just _banner "Finished vm64 on FreeBSD ARM64"
+
 # ═══════════════════════════════════════════════════════════
 #  vm32 Compile (internal)
 # ═══════════════════════════════════════════════════════════
@@ -377,7 +414,7 @@ _vm32-compile-freebsd-amd64-lib32 port:
 
 # Download and provision all VM images
 [group('Provision')]
-provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib provision-freebsd-amd64-lib32
+provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib provision-freebsd-amd64-lib32 provision-freebsd-arm64
     @just _banner "All images ready"
 
 # Download and provision Ubuntu ARM64
@@ -493,6 +530,44 @@ provision-freebsd-amd64-lib32:
     just _action "Provisioning complete — shutting down VM via SSH"
     just _stop-vm freebsd-amd64-lib32-provision.pid "$PORT"
     just _banner "FreeBSD AMD64 lib32 image ready"
+
+# Download and provision FreeBSD ARM64 (vm64; hvf-accelerated on Apple Silicon)
+#
+# Same nuageinit-on-first-boot constraint as the amd64 image: always re-extract
+# a pristine qcow2 from the cached .xz.
+[group('Provision')]
+provision-freebsd-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p images
+    xz_cache="images/freebsd-arm64.qcow2.xz"
+    if [ ! -f "$xz_cache" ]; then
+        just _action "Downloading FreeBSD ARM64 cloud-init image"
+        curl -L -o "$xz_cache" "{{FREEBSD_ARM64_URL}}"
+    else
+        echo "Cached download already exists: $xz_cache"
+    fi
+    just _action "Extracting fresh qcow2 from cached download"
+    rm -f "{{FREEBSD_ARM64_QCOW}}"
+    xz -dk -c "$xz_cache" > "{{FREEBSD_ARM64_QCOW}}"
+    qemu-img resize "{{FREEBSD_ARM64_QCOW}}" 20G
+    just _create-cloud-init-freebsd-arm64
+    just _action "Provisioning FreeBSD ARM64 via cloud-init"
+    PORT=$(just _free-port)
+    qemu-system-aarch64 \
+        -machine virt -accel hvf -cpu host \
+        -m 4G -smp 4 \
+        -drive file={{FREEBSD_ARM64_QCOW}},if=virtio \
+        -drive file=images/cloud-init-freebsd-arm64.iso,if=virtio,media=cdrom \
+        -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile freebsd-arm64-provision.pid \
+        -display none -daemonize
+    just _action "Waiting for nuageinit to finish (sshd will come up when done)"
+    just _wait-for-ssh "$PORT"
+    just _action "Provisioning complete — shutting down VM via SSH"
+    just _stop-vm freebsd-arm64-provision.pid "$PORT"
+    just _banner "FreeBSD ARM64 image ready"
 
 # ═══════════════════════════════════════════════════════════
 #  Environment
@@ -673,6 +748,33 @@ stop-freebsd-amd64-lib32:
     port=$(cat freebsd-amd64-lib32.port 2>/dev/null || echo "0")
     just _stop-vm freebsd-amd64-lib32.pid "$port"
     rm -f freebsd-amd64-lib32.port
+
+# Boot FreeBSD ARM64 VM (snapshot mode, hvf-accelerated)
+[group('Advanced')]
+start-freebsd-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Starting FreeBSD ARM64 VM"
+    PORT=$(just _free-port)
+    echo "$PORT" > freebsd-arm64.port
+    qemu-system-aarch64 \
+        -machine virt -accel hvf -cpu host \
+        -m 4G -smp 4 \
+        -drive file={{FREEBSD_ARM64_QCOW}},if=virtio,snapshot=on \
+        -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile freebsd-arm64.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _banner "FreeBSD ARM64 VM running on port $PORT"
+
+# Shut down FreeBSD ARM64 VM
+[group('Advanced')]
+stop-freebsd-arm64:
+    #!/usr/bin/env bash
+    port=$(cat freebsd-arm64.port 2>/dev/null || echo "0")
+    just _stop-vm freebsd-arm64.pid "$port"
+    rm -f freebsd-arm64.port
 
 # Execute command on a running VM via SSH
 [group('Advanced')]
@@ -966,6 +1068,63 @@ _create-cloud-init-freebsd-amd64-lib32:
       - mount /compat/i386/tmp
       - env IGNORE_OSVERSION=yes chroot /compat/i386 /bin/sh -c 'env ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes pkg bootstrap -y'
       - env IGNORE_OSVERSION=yes chroot /compat/i386 /bin/sh -c 'env ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes pkg install -y gcc cmake pkgconf rsync libX11 libXext xorgproto'
+      - service sshd start
+    EOF
+    if command -v mkisofs &>/dev/null; then
+        mkisofs -output "$iso" -volid cidata -joliet -rock "$tmpdir/user-data" "$tmpdir/meta-data"
+    elif command -v hdiutil &>/dev/null; then
+        mkdir -p "$tmpdir/iso_root"
+        cp "$tmpdir/user-data" "$tmpdir/meta-data" "$tmpdir/iso_root/"
+        hdiutil makehybrid -iso -joliet -iso-volume-name cidata -o "$iso" "$tmpdir/iso_root/"
+        [ -f "${iso}.iso" ] && mv "${iso}.iso" "$iso"
+    else
+        echo "ERROR: Cannot create cloud-init ISO (no mkisofs or hdiutil)"
+        echo "Install cdrtools: brew install cdrtools"
+        exit 1
+    fi
+    echo "Created cloud-init ISO: $iso"
+
+_create-cloud-init-freebsd-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    iso="images/cloud-init-freebsd-arm64.iso"
+    rm -f "$iso"
+    mkdir -p images
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+    instance_id="ci-vm-freebsd-arm64-$(date +%s)"
+    cat > "$tmpdir/meta-data" <<EOF
+    instance-id: $instance_id
+    local-hostname: ci-vm-freebsd-arm64
+    EOF
+    cat > "$tmpdir/user-data" <<'EOF'
+    #cloud-config
+    users:
+      - name: ci
+        plain_text_passwd: ci
+        lock_passwd: false
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/sh
+        ssh_authorized_keys: []
+
+    ssh_pwauth: true
+
+    package_update: true
+    packages:
+      - cmake
+      - rsync
+      - bash
+      - xxd
+      - pkgconf
+      - sudo
+      - libX11
+      - libXext
+      - ncurses
+
+    runcmd:
+      - ssh-keygen -A
+      - sed -i '' 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+      - sysrc sshd_enable=YES
       - service sshd start
     EOF
     if command -v mkisofs &>/dev/null; then
