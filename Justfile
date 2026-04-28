@@ -24,6 +24,7 @@ UBUNTU_ARM64_QCOW  := 'images/ubuntu-arm64.qcow2'
 UBUNTU_AMD64_QCOW  := 'images/ubuntu-amd64.qcow2'
 FREEBSD_ARM64_QCOW := 'images/freebsd-arm64.qcow2'
 FREEBSD_AMD64_QCOW := 'images/freebsd-amd64.qcow2'
+NETBSD_AMD64_QCOW  := 'images/netbsd-amd64.qcow2'
 
 # vm platforms (32-bit, AMD64 host with multilib support)
 UBUNTU_MULTILIB_QCOW  := 'images/ubuntu-amd64-multilib.qcow2'
@@ -37,6 +38,7 @@ UBUNTU_AMD64_URL   := 'https://cloud-images.ubuntu.com/noble/current/noble-serve
 FREEBSD_AMD64_URL  := 'https://download.freebsd.org/releases/VM-IMAGES/15.0-RELEASE/amd64/Latest/FreeBSD-15.0-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz'
 FREEBSD_ARM64_URL  := 'https://download.freebsd.org/releases/VM-IMAGES/15.0-RELEASE/aarch64/Latest/FreeBSD-15.0-RELEASE-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2.xz'
 NETBSD_I386_URL    := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/i386/'
+NETBSD_AMD64_URL   := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/amd64/'
 
 # ─── Default ──────────────────────────────────────────────
 
@@ -143,6 +145,7 @@ fullrun-vm64:
     just vm64-ubuntu-amd64 && RESULTS+=("vm64-ubuntu-amd64: PASS") || { RESULTS+=("vm64-ubuntu-amd64: FAIL"); FAILS=$((FAILS + 1)); }
     just vm64-freebsd-arm64 && RESULTS+=("vm64-freebsd-arm64: PASS") || { RESULTS+=("vm64-freebsd-arm64: FAIL"); FAILS=$((FAILS + 1)); }
     just vm64-freebsd-amd64 && RESULTS+=("vm64-freebsd-amd64: PASS") || { RESULTS+=("vm64-freebsd-amd64: FAIL"); FAILS=$((FAILS + 1)); }
+    just vm64-netbsd-amd64 && RESULTS+=("vm64-netbsd-amd64: PASS") || { RESULTS+=("vm64-netbsd-amd64: FAIL"); FAILS=$((FAILS + 1)); }
 
     ELAPSED=$((SECONDS - START))
     echo ""
@@ -315,6 +318,30 @@ vm64-freebsd-amd64:
     fi
     exit $result
 
+# Build and test vm64 on NetBSD AMD64 (TCG-emulated)
+[group('vm64')]
+vm64-netbsd-amd64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _check-src
+    just start-netbsd-amd64
+    PORT=$(cat netbsd-amd64.port)
+    result=0
+    just _vm64-compile-netbsd-amd64 "$PORT" || result=$?
+    if [ $result -eq 0 ]; then
+        mkdir -p artifacts
+        sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -P "$PORT" \
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm64-netbsd-amd64"
+    fi
+    just stop-netbsd-amd64
+    if [ $result -eq 0 ]; then
+        just _pass "vm64-netbsd-amd64"
+    else
+        just _fail "vm64-netbsd-amd64"
+    fi
+    exit $result
+
 # ═══════════════════════════════════════════════════════════
 #  vm32 Build + Test
 # ═══════════════════════════════════════════════════════════
@@ -449,6 +476,16 @@ _vm64-compile-freebsd-amd64 port:
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
     @just _banner "Finished vm64 on FreeBSD AMD64"
 
+_vm64-compile-netbsd-amd64 port:
+    @just _action "Compiling vm64 on NetBSD AMD64"
+    @just _rsync {{port}}
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm64 -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF && rm -f build/incls/_precompiled.hh.gch && cmake --build build -j$(sysctl -n hw.ncpu)'
+    @just do {{port}} 'cd /tmp/self-build && build/Self --vm-run-tests'
+    @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap64'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
+    @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap64'
+    @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
+    @just _banner "Finished vm64 on NetBSD AMD64"
+
 # ═══════════════════════════════════════════════════════════
 #  vm32 Compile (internal)
 # ═══════════════════════════════════════════════════════════
@@ -486,7 +523,7 @@ _vm32-compile-netbsd-i386 port:
 
 # Download and provision all VM images
 [group('Provision')]
-provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib provision-freebsd-amd64-lib32 provision-freebsd-arm64 provision-freebsd-amd64 provision-netbsd-i386
+provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib provision-freebsd-amd64-lib32 provision-freebsd-arm64 provision-freebsd-amd64 provision-netbsd-i386 provision-netbsd-amd64
     @just _banner "All images ready"
 
 # Download and provision Ubuntu ARM64
@@ -738,6 +775,62 @@ provision-netbsd-i386:
     just _action "Shutting down VM"
     just _stop-vm netbsd-i386-provision.pid "$PORT"
     just _banner "NetBSD i386 image ready"
+
+# Download and provision NetBSD AMD64 (vm64, via Anita run through uvx)
+#
+# Same two-phase approach as netbsd-i386: anita drives sysinst over the serial
+# console for Phase A (user, sshd, network, sudo); Phase B SSHes in to run
+# pkgin and install build deps. Re-running this recipe re-uses anita's workdir
+# cache and only repeats Phase B if Phase A already completed.
+[group('Provision')]
+provision-netbsd-amd64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p images
+    workdir="images/netbsd-amd64-anita"
+    #
+    # Phase A: anita install + minimal --run (user, root pw, sshd, network, keygen).
+    # No pkgin here — pkgsrc mirror stalls during anita's expect-driven boot kill
+    # the whole install.
+    #
+    just _action "Phase A: anita install (minimal --run)"
+    uvx --from git+https://github.com/gson1703/anita.git --with pexpect anita \
+        --workdir "$workdir" \
+        --disk-size 20G \
+        --memory-size 2G \
+        --persist \
+        --sets kern-GENERIC,modules,base,etc,comp,xbase,xcomp \
+        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_wm0=dhcp >> /etc/rc.conf && ssh-keygen -A && dhcpcd wm0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/amd64/10.0/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
+        boot \
+        "{{NETBSD_AMD64_URL}}"
+    just _action "Converting wd0.img → qcow2"
+    rm -f "{{NETBSD_AMD64_QCOW}}"
+    qemu-img convert -f raw -O qcow2 "$workdir/wd0.img" "{{NETBSD_AMD64_QCOW}}"
+    #
+    # Phase B: boot the qcow2 normally (persistent writes), ssh in as root, run
+    # pkgin install. If this fails, re-run this recipe — anita is skipped
+    # because its workdir cache is intact, and only Phase B repeats.
+    #
+    just _action "Phase B: booting qcow2 to install pkgsrc packages"
+    PORT=$(just _free-port)
+    # Always clean up Phase B qemu on exit (success or failure) so a mid-run
+    # error doesn't leave a daemonized qemu locking the pidfile.
+    trap '[ -f netbsd-amd64-provision.pid ] && kill "$(cat netbsd-amd64-provision.pid)" 2>/dev/null; rm -f netbsd-amd64-provision.pid' EXIT
+    qemu-system-x86_64 \
+        -machine q35 -cpu qemu64 \
+        -m 4G -smp 2 \
+        -drive file={{NETBSD_AMD64_QCOW}},if=virtio \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile netbsd-amd64-provision.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _action "Installing pkgsrc packages via SSH as root"
+    sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p "$PORT" ci@localhost \
+        'export PATH=/usr/sbin:/sbin:/usr/bin:/bin:/usr/pkg/sbin:/usr/pkg/bin && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/amd64/10.0/All && (ifconfig wm0 | grep -q "inet " || sudo dhcpcd wm0) && sudo env PKG_PATH=$PKG_PATH pkg_add pkgin && echo "$PKG_PATH" | sudo tee /usr/pkg/etc/pkgin/repositories.conf > /dev/null && sudo env PKG_PATH=$PKG_PATH pkgin -y update && sudo env PKG_PATH=$PKG_PATH pkgin -y install cmake gcc12 rsync jemalloc bash vim-share'
+    just _action "Shutting down VM"
+    just _stop-vm netbsd-amd64-provision.pid "$PORT"
+    just _banner "NetBSD AMD64 image ready"
 
 # ═══════════════════════════════════════════════════════════
 #  Environment
@@ -998,6 +1091,32 @@ stop-netbsd-i386:
     port=$(cat netbsd-i386.port 2>/dev/null || echo "0")
     just _stop-vm netbsd-i386.pid "$port"
     rm -f netbsd-i386.port
+
+# Boot NetBSD AMD64 VM (snapshot mode, TCG-emulated, for vm64)
+[group('Advanced')]
+start-netbsd-amd64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Starting NetBSD AMD64 VM"
+    PORT=$(just _free-port)
+    echo "$PORT" > netbsd-amd64.port
+    qemu-system-x86_64 \
+        -machine q35 -cpu qemu64 \
+        -m 4G -smp 2 \
+        -drive file={{NETBSD_AMD64_QCOW}},if=virtio,snapshot=on \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile netbsd-amd64.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _banner "NetBSD AMD64 VM running on port $PORT"
+
+# Shut down NetBSD AMD64 VM
+[group('Advanced')]
+stop-netbsd-amd64:
+    #!/usr/bin/env bash
+    port=$(cat netbsd-amd64.port 2>/dev/null || echo "0")
+    just _stop-vm netbsd-amd64.pid "$port"
+    rm -f netbsd-amd64.port
 
 # Execute command on a running VM via SSH
 [group('Advanced')]
