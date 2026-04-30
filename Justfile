@@ -30,6 +30,8 @@ NETBSD_AMD64_QCOW  := 'images/netbsd-amd64.qcow2'
 UBUNTU_MULTILIB_QCOW  := 'images/ubuntu-amd64-multilib.qcow2'
 FREEBSD_LIB32_QCOW := 'images/freebsd-amd64-lib32.qcow2'
 NETBSD_I386_QCOW   := 'images/netbsd-i386.qcow2'
+NETBSD_MACPPC_QCOW  := 'images/netbsd-macppc.qcow2'
+NETBSD_SPARC64_QCOW := 'images/netbsd-sparc64.qcow2'
 
 # ─── Download URLs ────────────────────────────────────────
 
@@ -39,6 +41,8 @@ FREEBSD_AMD64_URL  := 'https://download.freebsd.org/releases/VM-IMAGES/15.0-RELE
 FREEBSD_ARM64_URL  := 'https://download.freebsd.org/releases/VM-IMAGES/15.0-RELEASE/aarch64/Latest/FreeBSD-15.0-RELEASE-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2.xz'
 NETBSD_I386_URL    := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/i386/'
 NETBSD_AMD64_URL   := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/amd64/'
+NETBSD_MACPPC_URL   := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/macppc/'
+NETBSD_SPARC64_URL  := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/images/NetBSD-10.1-sparc64.iso'
 
 # ─── Default ──────────────────────────────────────────────
 
@@ -179,6 +183,8 @@ fullrun-vm32:
     just vm32-ubuntu-amd64 && RESULTS+=("vm32-ubuntu-amd64: PASS") || { RESULTS+=("vm32-ubuntu-amd64: FAIL"); FAILS=$((FAILS + 1)); }
     just vm32-freebsd-amd64-lib32 && RESULTS+=("vm32-freebsd-amd64-lib32: PASS") || { RESULTS+=("vm32-freebsd-amd64-lib32: FAIL"); FAILS=$((FAILS + 1)); }
     just vm32-netbsd-i386 && RESULTS+=("vm32-netbsd-i386: PASS") || { RESULTS+=("vm32-netbsd-i386: FAIL"); FAILS=$((FAILS + 1)); }
+    just vm32-netbsd-macppc && RESULTS+=("vm32-netbsd-macppc: PASS") || { RESULTS+=("vm32-netbsd-macppc: FAIL"); FAILS=$((FAILS + 1)); }
+    just vm32-netbsd-sparc64 && RESULTS+=("vm32-netbsd-sparc64: PASS") || { RESULTS+=("vm32-netbsd-sparc64: FAIL"); FAILS=$((FAILS + 1)); }
 
     ELAPSED=$((SECONDS - START))
     echo ""
@@ -418,6 +424,55 @@ vm32-netbsd-i386:
     fi
     exit $result
 
+# Build and test vm32 on NetBSD macppc (PowerPC, big-endian)
+[group('vm32')]
+vm32-netbsd-macppc:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _check-src
+    just start-netbsd-macppc
+    PORT=$(cat netbsd-macppc.port)
+    result=0
+    just _vm32-compile-netbsd-macppc "$PORT" || result=$?
+    if [ $result -eq 0 ]; then
+        mkdir -p artifacts
+        sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -P "$PORT" \
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm32-netbsd-macppc"
+    fi
+    just stop-netbsd-macppc
+    if [ $result -eq 0 ]; then
+        just _pass "vm32-netbsd-macppc"
+    else
+        just _fail "vm32-netbsd-macppc"
+    fi
+    exit $result
+
+# Build and test vm32 on NetBSD sparc64 (32-bit SPARC binaries via gcc -m32,
+# run on a sparc64 host through COMPAT_NETBSD32)
+[group('vm32')]
+vm32-netbsd-sparc64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _check-src
+    just start-netbsd-sparc64
+    PORT=$(cat netbsd-sparc64.port)
+    result=0
+    just _vm32-compile-netbsd-sparc64 "$PORT" || result=$?
+    if [ $result -eq 0 ]; then
+        mkdir -p artifacts
+        sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -P "$PORT" \
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm32-netbsd-sparc64"
+    fi
+    just stop-netbsd-sparc64
+    if [ $result -eq 0 ]; then
+        just _pass "vm32-netbsd-sparc64"
+    else
+        just _fail "vm32-netbsd-sparc64"
+    fi
+    exit $result
+
 # ═══════════════════════════════════════════════════════════
 #  vm64 Compile (internal)
 # ═══════════════════════════════════════════════════════════
@@ -517,13 +572,31 @@ _vm32-compile-netbsd-i386 port:
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap --runAutomaticTests --headless'
     @just _banner "Finished vm32 on NetBSD i386"
 
+_vm32-compile-netbsd-macppc port:
+    @just _action "Compiling vm32 on NetBSD macppc"
+    @just _rsync {{port}}
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF && cmake --build build -j$(sysctl -n hw.ncpu)'
+    @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
+    @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap'
+    @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap --runAutomaticTests --headless'
+    @just _banner "Finished vm32 on NetBSD macppc"
+
+_vm32-compile-netbsd-sparc64 port:
+    @just _action "Compiling vm32 (sparc -m32) on NetBSD sparc64"
+    @just _rsync {{port}}
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_EXE_LINKER_FLAGS="-m32 -Wl,-rpath,/usr/X11R7/lib/sparc:/usr/lib/sparc" -DCMAKE_LIBRARY_PATH="/usr/lib/sparc;/usr/X11R7/lib/sparc" -DCMAKE_INCLUDE_PATH="/usr/X11R7/include" && cmake --build build -j$(sysctl -n hw.ncpu)'
+    @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
+    @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap'
+    @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap --runAutomaticTests --headless'
+    @just _banner "Finished vm32 on NetBSD sparc64"
+
 # ═══════════════════════════════════════════════════════════
 #  Provision — Download and provision VM images
 # ═══════════════════════════════════════════════════════════
 
 # Download and provision all VM images
 [group('Provision')]
-provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib provision-freebsd-amd64-lib32 provision-freebsd-arm64 provision-freebsd-amd64 provision-netbsd-i386 provision-netbsd-amd64
+provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib provision-freebsd-amd64-lib32 provision-freebsd-arm64 provision-freebsd-amd64 provision-netbsd-i386 provision-netbsd-amd64 provision-netbsd-macppc provision-netbsd-sparc64
     @just _banner "All images ready"
 
 # Download and provision Ubuntu ARM64
@@ -832,6 +905,151 @@ provision-netbsd-amd64:
     just _stop-vm netbsd-amd64-provision.pid "$PORT"
     just _banner "NetBSD AMD64 image ready"
 
+# Download and provision NetBSD macppc (vm 32-bit, PowerPC, via Anita run through uvx)
+#
+# Same two-phase approach as netbsd-i386: anita drives sysinst over the serial
+# console for Phase A; Phase B SSHes in to run pkgin and install build deps.
+# macppc is PowerPC 32-bit big-endian, emulated on amd64/arm64 hosts via
+# qemu-system-ppc with the mac99 (PowerMac G4) machine. The on-board NIC is
+# sungem, exposed as gem0 in NetBSD, and the disk is IDE (mac99 has no virtio).
+[group('Provision')]
+provision-netbsd-macppc:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p images
+    workdir="images/netbsd-macppc-anita"
+    #
+    # Phase A: anita install + minimal --run (user, root pw, sshd, network, keygen).
+    #
+    just _action "Phase A: anita install (minimal --run)"
+    # macppc memory sensitivity: NetBSD/macppc on qemu is finicky about RAM
+    # — 1G traps early in the kernel (silent hang right after OpenBIOS hands
+    # off), 3G fails part-way through install. 2G is the documented sweet
+    # spot. See port-macppc list, riastradh, 2021-04-04:
+    # http://mail-index.netbsd.org/port-macppc/2021/04/04/msg002856.html
+    # Also override the default `mac99` (cuda) → `mac99,via=pmu` for stability.
+    uvx --from git+https://github.com/gson1703/anita.git --with pexpect anita \
+        --workdir "$workdir" \
+        --disk-size 20G \
+        --memory-size 2G \
+        --persist \
+        --sets kern-GENERIC,modules,base,etc,comp \
+        --machine "mac99,via=pmu" \
+        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_gem0=dhcp >> /etc/rc.conf && ssh-keygen -A && dhcpcd gem0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/macppc/10.0/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
+        boot \
+        "{{NETBSD_MACPPC_URL}}"
+    just _action "Converting wd0.img → qcow2"
+    rm -f "{{NETBSD_MACPPC_QCOW}}"
+    qemu-img convert -f raw -O qcow2 "$workdir/wd0.img" "{{NETBSD_MACPPC_QCOW}}"
+    #
+    # Phase B: boot the qcow2 normally (persistent writes), ssh in as root, run
+    # pkgin install. If this fails, re-run this recipe — anita is skipped
+    # because its workdir cache is intact, and only Phase B repeats.
+    #
+    just _action "Phase B: booting qcow2 to install pkgsrc packages"
+    PORT=$(just _free-port)
+    trap '[ -f netbsd-macppc-provision.pid ] && kill "$(cat netbsd-macppc-provision.pid)" 2>/dev/null; rm -f netbsd-macppc-provision.pid' EXIT
+    qemu-system-ppc \
+        -M mac99,via=pmu -cpu G4 \
+        -m 2G \
+        -drive file={{NETBSD_MACPPC_QCOW}},if=ide \
+        -nic user,model=sungem,hostfwd=tcp::${PORT}-:22 \
+        -prom-env "auto-boot?=true" \
+        -prom-env "boot-device=hd:,\\ofwboot.xcf" \
+        -prom-env "boot-file=netbsd" \
+        -pidfile netbsd-macppc-provision.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _action "Installing pkgsrc packages via SSH as root"
+    sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p "$PORT" ci@localhost \
+        'export PATH=/usr/sbin:/sbin:/usr/bin:/bin:/usr/pkg/sbin:/usr/pkg/bin && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/macppc/10.0/All && (ifconfig gem0 | grep -q "inet " || sudo dhcpcd gem0) && sudo env PKG_PATH=$PKG_PATH pkg_add pkgin && echo "$PKG_PATH" | sudo tee /usr/pkg/etc/pkgin/repositories.conf > /dev/null && sudo env PKG_PATH=$PKG_PATH pkgin -y update && sudo env PKG_PATH=$PKG_PATH pkgin -y install cmake gcc12 rsync jemalloc bash vim-share'
+    just _action "Shutting down VM"
+    just _stop-vm netbsd-macppc-provision.pid "$PORT"
+    just _banner "NetBSD macppc image ready"
+
+# Download and provision NetBSD sparc64 (vm 32-bit via gcc -m32, via Anita run
+# through uvx)
+#
+# Same two-phase approach as netbsd-i386: anita drives sysinst over the serial
+# console for Phase A; Phase B SSHes in to run pkgin and install build deps.
+# sparc64 is 64-bit SPARC big-endian, emulated via qemu-system-sparc64 with
+# the default sun4u (UltraSPARC) machine. The on-board NIC is sunhme (hme0 in
+# NetBSD) and the disk is IDE on the sun4u south bridge. The system gcc in
+# base/comp ships with sparc/sparc64 multilib, so we build vm32 with -m32 and
+# run the resulting 32-bit binary directly via the kernel's COMPAT_NETBSD32.
+[group('Provision')]
+provision-netbsd-sparc64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p images
+    workdir="images/netbsd-sparc64-anita"
+    #
+    # Phase A: anita install + minimal --run (user, root pw, sshd, network, keygen).
+    # anita requires an ISO for sparc64 (not a release tree); see check_arch_supported
+    # in anita.py.
+    #
+    just _action "Phase A: anita install (minimal --run)"
+    uvx --from git+https://github.com/gson1703/anita.git --with pexpect anita \
+        --workdir "$workdir" \
+        --disk-size 20G \
+        --memory-size 2G \
+        --persist \
+        --sets kern-GENERIC,modules,base,etc,comp,xbase,xcomp \
+        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_hme0=dhcp >> /etc/rc.conf && ssh-keygen -A && dhcpcd hme0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/sparc64/10.1/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
+        boot \
+        "{{NETBSD_SPARC64_URL}}"
+    just _action "Converting wd0.img → qcow2"
+    rm -f "{{NETBSD_SPARC64_QCOW}}"
+    qemu-img convert -f raw -O qcow2 "$workdir/wd0.img" "{{NETBSD_SPARC64_QCOW}}"
+    #
+    # Phase B: boot the qcow2 normally (persistent writes), ssh in as root, run
+    # pkgin install. If this fails, re-run this recipe — anita is skipped
+    # because its workdir cache is intact, and only Phase B repeats. Note: we
+    # install cmake/rsync/jemalloc/bash but NOT pkgsrc gcc — the system gcc
+    # from comp.tar.xz is what supports -m32 multilib for the vm32 build.
+    #
+    just _action "Phase B: booting qcow2 to install pkgsrc packages"
+    PORT=$(just _free-port)
+    trap '[ -f netbsd-sparc64-provision.pid ] && kill "$(cat netbsd-sparc64-provision.pid)" 2>/dev/null; rm -f netbsd-sparc64-provision.pid' EXIT
+    qemu-system-sparc64 \
+        -M sun4u \
+        -m 2G \
+        -drive file={{NETBSD_SPARC64_QCOW}},if=ide,bus=0,unit=0,media=disk \
+        -nic user,model=sunhme,hostfwd=tcp::${PORT}-:22 \
+        -pidfile netbsd-sparc64-provision.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _action "Installing pkgsrc packages via SSH as root"
+    sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p "$PORT" ci@localhost \
+        'export PATH=/usr/sbin:/sbin:/usr/bin:/bin:/usr/pkg/sbin:/usr/pkg/bin && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/sparc64/10.1/All && (ifconfig hme0 | grep -q "inet " || sudo dhcpcd hme0) && sudo env PKG_PATH=$PKG_PATH pkg_add pkgin && echo "$PKG_PATH" | sudo tee /usr/pkg/etc/pkgin/repositories.conf > /dev/null && sudo env PKG_PATH=$PKG_PATH pkgin -y update && sudo env PKG_PATH=$PKG_PATH pkgin -y install cmake rsync jemalloc bash vim-share'
+    #
+    # Install 32-bit X11 libraries from the NetBSD/sparc release sets. sparc64
+    # xbase ships only 64-bit X11; the kernel runs 32-bit sparc binaries via
+    # COMPAT_NETBSD32, but we need 32-bit libX11/libXext/etc. to link against.
+    #
+    # The .so files in sparc xbase are super-stripped (e_shstrndx zeroed,
+    # truncated section header table) — usable by the dynamic loader at
+    # runtime but not by ld(1) at link time. So we pull both xbase (for the
+    # .so symlink chain that cmake's find_package(X11) keys off of) AND
+    # xcomp (for the .a static archives), then replace the broken libX11.so
+    # / libXext.so files with linker scripts that GROUP-include the static
+    # archives and their transitive deps. The final Self binary has X11
+    # statically linked.
+    #
+    # Replaces each super-stripped lib*.so symlink with a GNU ld linker script
+    # that GROUPs every X11 .a archive we have plus xcb/Xau/Xdmcp and dynamic
+    # system libs (expat, z). ld pulls in only archive members that resolve
+    # undefined symbols, so this universal script works for any -l<X11lib>.
+    just _action "Installing 32-bit X11 libs from NetBSD/sparc xbase + xcomp"
+    sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p "$PORT" ci@localhost \
+        'set -e; cd /tmp && ftp -4 -V -o xbase-sparc.tgz http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/sparc/binary/sets/xbase.tgz && ftp -4 -V -o xcomp-sparc.tgz http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/sparc/binary/sets/xcomp.tgz && sudo rm -rf /tmp/sparc-xbase /tmp/sparc-xcomp && sudo mkdir -p /tmp/sparc-xbase /tmp/sparc-xcomp /usr/X11R7/lib/sparc && sudo tar -xzf /tmp/xbase-sparc.tgz -C /tmp/sparc-xbase && sudo tar -xzf /tmp/xcomp-sparc.tgz -C /tmp/sparc-xcomp && sudo sh -c "cd /tmp/sparc-xbase/usr/X11R7/lib && cp -P lib*.so* /usr/X11R7/lib/sparc/" && sudo sh -c "cd /tmp/sparc-xcomp/usr/X11R7/lib && cp lib*.a /usr/X11R7/lib/sparc/" && SPARC=/usr/X11R7/lib/sparc && LIBS="X11 Xext Xft Xrender fontconfig freetype ICE SM Xt Xmu Xcursor Xfixes Xi Xrandr Xinerama Xpm Xtst" && ALL_A="" && for lib in $LIBS; do [ -f "$SPARC/lib$lib.a" ] && ALL_A="$ALL_A $SPARC/lib$lib.a"; done && COMMON="$SPARC/libxcb.a $SPARC/libXau.a $SPARC/libXdmcp.a -lexpat -lz" && for lib in $LIBS; do if [ -f "$SPARC/lib$lib.a" ]; then sudo rm -f "$SPARC/lib$lib.so" && echo "GROUP ( $ALL_A $COMMON )" | sudo tee "$SPARC/lib$lib.so" > /dev/null; fi; done && sudo rm -rf /tmp/sparc-xbase /tmp/sparc-xcomp /tmp/xbase-sparc.tgz /tmp/xcomp-sparc.tgz'
+    just _action "Shutting down VM"
+    just _stop-vm netbsd-sparc64-provision.pid "$PORT"
+    just _banner "NetBSD sparc64 image ready"
+
 # ═══════════════════════════════════════════════════════════
 #  Environment
 # ═══════════════════════════════════════════════════════════
@@ -853,6 +1071,8 @@ check-env:
             python3)              echo "brew install python3" ;;
             qemu-img)             echo "brew install qemu" ;;
             qemu-system-aarch64)  echo "brew install qemu" ;;
+            qemu-system-ppc)      echo "brew install qemu" ;;
+            qemu-system-sparc64)  echo "brew install qemu" ;;
             qemu-system-x86_64)   echo "brew install qemu" ;;
             rsync)                echo "brew install rsync" ;;
             ssh)                  echo "should be pre-installed on macOS" ;;
@@ -863,7 +1083,7 @@ check-env:
         esac
     }
 
-    for cmd in cmake curl expect gunzip python3 qemu-img qemu-system-aarch64 qemu-system-x86_64 rsync ssh sshpass uv xxd xz; do
+    for cmd in cmake curl expect gunzip python3 qemu-img qemu-system-aarch64 qemu-system-ppc qemu-system-sparc64 qemu-system-x86_64 rsync ssh sshpass uv xxd xz; do
         if command -v "$cmd" &>/dev/null; then
             printf "  %-30s %s\n" "$cmd" "$(command -v "$cmd")"
         else
@@ -1117,6 +1337,61 @@ stop-netbsd-amd64:
     port=$(cat netbsd-amd64.port 2>/dev/null || echo "0")
     just _stop-vm netbsd-amd64.pid "$port"
     rm -f netbsd-amd64.port
+
+# Boot NetBSD macppc VM (snapshot mode, TCG-emulated, for vm32)
+[group('Advanced')]
+start-netbsd-macppc:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Starting NetBSD macppc VM"
+    PORT=$(just _free-port)
+    echo "$PORT" > netbsd-macppc.port
+    qemu-system-ppc \
+        -M mac99,via=pmu -cpu G4 \
+        -m 2G \
+        -drive file={{NETBSD_MACPPC_QCOW}},if=ide,snapshot=on \
+        -nic user,model=sungem,hostfwd=tcp::${PORT}-:22 \
+        -prom-env "auto-boot?=true" \
+        -prom-env "boot-device=hd:,\\ofwboot.xcf" \
+        -prom-env "boot-file=netbsd" \
+        -pidfile netbsd-macppc.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _banner "NetBSD macppc VM running on port $PORT"
+
+# Shut down NetBSD macppc VM
+[group('Advanced')]
+stop-netbsd-macppc:
+    #!/usr/bin/env bash
+    port=$(cat netbsd-macppc.port 2>/dev/null || echo "0")
+    just _stop-vm netbsd-macppc.pid "$port"
+    rm -f netbsd-macppc.port
+
+# Boot NetBSD sparc64 VM (snapshot mode, TCG-emulated, for vm32 via -m32)
+[group('Advanced')]
+start-netbsd-sparc64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Starting NetBSD sparc64 VM"
+    PORT=$(just _free-port)
+    echo "$PORT" > netbsd-sparc64.port
+    qemu-system-sparc64 \
+        -M sun4u \
+        -m 2G \
+        -drive file={{NETBSD_SPARC64_QCOW}},if=ide,bus=0,unit=0,media=disk,snapshot=on \
+        -nic user,model=sunhme,hostfwd=tcp::${PORT}-:22 \
+        -pidfile netbsd-sparc64.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _banner "NetBSD sparc64 VM running on port $PORT"
+
+# Shut down NetBSD sparc64 VM
+[group('Advanced')]
+stop-netbsd-sparc64:
+    #!/usr/bin/env bash
+    port=$(cat netbsd-sparc64.port 2>/dev/null || echo "0")
+    just _stop-vm netbsd-sparc64.pid "$port"
+    rm -f netbsd-sparc64.port
 
 # Execute command on a running VM via SSH
 [group('Advanced')]
