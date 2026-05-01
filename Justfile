@@ -26,7 +26,7 @@ FREEBSD_ARM64_QCOW := 'images/freebsd-arm64.qcow2'
 FREEBSD_AMD64_QCOW := 'images/freebsd-amd64.qcow2'
 NETBSD_AMD64_QCOW  := 'images/netbsd-amd64.qcow2'
 
-# vm platforms (32-bit, AMD64 host with multilib support)
+# vm platforms (32-bit, usually 64 bit host with multilib support)
 UBUNTU_MULTILIB_QCOW  := 'images/ubuntu-amd64-multilib.qcow2'
 FREEBSD_LIB32_QCOW := 'images/freebsd-amd64-lib32.qcow2'
 NETBSD_I386_QCOW   := 'images/netbsd-i386.qcow2'
