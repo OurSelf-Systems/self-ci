@@ -1,16 +1,17 @@
 # Local CI — Tutorial
 
-This guide walks you through setting up and running the local CI system for Self. It builds vm64 (64-bit) on macOS, Linux, FreeBSD, and NetBSD, and the legacy vm (32-bit) on Ubuntu AMD64, FreeBSD i386, and NetBSD i386 — all using QEMU virtual machines.
+This guide walks you through setting up and running the local CI system for Self. It builds vm64 (64-bit) on macOS, Linux, FreeBSD, and NetBSD, and the legacy vm32 (32-bit) on Ubuntu AMD64 multilib, FreeBSD AMD64 lib32 chroot, NetBSD i386, NetBSD macppc, and NetBSD sparc64 — all using QEMU virtual machines.
 
 ## Prerequisites
 
-Install QEMU, sshpass, and just on your Mac:
+Install the required tools on your Mac:
 
 ```bash
-brew install qemu sshpass just
+brew install qemu just expect xz uv
+brew install esolitos/ipa/sshpass
 ```
 
-That's it. QEMU includes the EFI firmware needed for ARM64 VMs.
+QEMU includes the EFI firmware needed for ARM64 VMs. `expect` drives the FreeBSD console installer, `xz` extracts the FreeBSD cloud images, and `uv` runs Anita for NetBSD provisioning. `cmake`, `rsync`, `python3`, and `xxd` are also required but ship with macOS or come as transitive dependencies — run `just check-env` to confirm everything is present.
 
 ## Step 1: Set up a source tree
 
@@ -49,12 +50,13 @@ Or set up individual platforms:
 just provision-ubuntu-arm64           # Ubuntu ARM64 (vm64, near-native speed)
 just provision-ubuntu-amd64           # Ubuntu AMD64 (vm64, emulated)
 just provision-ubuntu-amd64-multilib  # Ubuntu AMD64 multilib (vm 32-bit, emulated)
-just provision-freebsd-amd64-multilib # FreeBSD AMD64 multilib (vm 32-bit, emulated)
+just provision-freebsd-amd64-lib32    # FreeBSD AMD64 lib32 chroot (vm 32-bit, emulated)
 just provision-freebsd-arm64          # FreeBSD ARM64 (vm64, hvf-accelerated)
 just provision-freebsd-amd64          # FreeBSD AMD64 (vm64, emulated)
 just provision-netbsd-i386            # NetBSD i386 (vm 32-bit, emulated, via Anita)
 just provision-netbsd-amd64           # NetBSD AMD64 (vm64, emulated, via Anita)
 just provision-netbsd-macppc          # NetBSD macppc (vm 32-bit, PowerPC, emulated, via Anita)
+just provision-netbsd-sparc64         # NetBSD sparc64 (vm 32-bit via -m32, SPARC, emulated, via Anita)
 ```
 
 ### Ubuntu (ARM64 and AMD64)
@@ -90,10 +92,11 @@ just SELFSRC=self64@current vm64-freebsd-amd64   # FreeBSD 15 amd64, emulated
 just SELFSRC=self64@current vm64-netbsd-amd64    # NetBSD 10 amd64, emulated
 
 # vm32 (32-bit)
-just SELFSRC=self64@current vm32-ubuntu-amd64    # 32-bit build via multilib on AMD64
-just SELFSRC=self64@current vm32-freebsd-amd64-multilib  # 32-bit build on FreeBSD via multilib
-just SELFSRC=self64@current vm32-netbsd-i386     # 32-bit build on NetBSD i386, emulated
-just SELFSRC=self64@current vm32-netbsd-macppc   # 32-bit build on NetBSD macppc (PowerPC), emulated
+just SELFSRC=self64@current vm32-ubuntu-amd64           # 32-bit build via multilib on AMD64
+just SELFSRC=self64@current vm32-freebsd-amd64-lib32    # 32-bit build on FreeBSD via lib32 chroot
+just SELFSRC=self64@current vm32-netbsd-i386            # 32-bit build on NetBSD i386, emulated
+just SELFSRC=self64@current vm32-netbsd-macppc          # 32-bit build on NetBSD macppc (PowerPC), emulated
+just SELFSRC=self64@current vm32-netbsd-sparc64         # 32-bit build on NetBSD sparc64 (SPARC, -m32), emulated
 ```
 
 ### See all available recipes
@@ -125,9 +128,9 @@ just reset-everything   # Delete all images and logs
 
 **"Disk image not found"** — Run `just provision-<platform>` first.
 
-**SSH connection refused** — The VM may still be booting. The script waits up to 120 seconds. If it still fails, try re-provisioning the image.
+**SSH connection refused** — The VM may still be booting. The script waits up to 360 seconds. If it still fails, try re-provisioning the image.
 
-**"sshpass: command not found"** — Install it: `brew install sshpass` (may need `brew install hudochenkov/sshpass/sshpass`).
+**"sshpass: command not found"** — Install it from the third-party tap: `brew install esolitos/ipa/sshpass`.
 
 **x86_64 build is very slow** — This is expected. Software emulation (TCG) runs at ~5-10x slower than native. Budget 10-20 minutes for x86_64 builds.
 
