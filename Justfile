@@ -25,6 +25,7 @@ UBUNTU_AMD64_QCOW  := 'images/ubuntu-amd64.qcow2'
 FREEBSD_ARM64_QCOW := 'images/freebsd-arm64.qcow2'
 FREEBSD_AMD64_QCOW := 'images/freebsd-amd64.qcow2'
 NETBSD_AMD64_QCOW  := 'images/netbsd-amd64.qcow2'
+NETBSD_ARM64_QCOW  := 'images/netbsd-arm64.qcow2'
 
 # vm platforms (32-bit, usually 64 bit host with multilib support)
 UBUNTU_MULTILIB_QCOW  := 'images/ubuntu-amd64-multilib.qcow2'
@@ -41,6 +42,7 @@ FREEBSD_AMD64_URL  := 'https://download.freebsd.org/releases/VM-IMAGES/15.0-RELE
 FREEBSD_ARM64_URL  := 'https://download.freebsd.org/releases/VM-IMAGES/15.0-RELEASE/aarch64/Latest/FreeBSD-15.0-RELEASE-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2.xz'
 NETBSD_I386_URL    := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/i386/'
 NETBSD_AMD64_URL   := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/amd64/'
+NETBSD_ARM64_URL   := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/evbarm-aarch64/'
 NETBSD_MACPPC_URL   := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/macppc/'
 NETBSD_SPARC64_URL  := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/images/NetBSD-10.1-sparc64.iso'
 
@@ -214,17 +216,34 @@ fullrun-vm32:
 [group('vm64')]
 vm64-macos-native:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
+    NAME=vm64-macos-native
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    finalize() {
+        local code=$?
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed Self-vm64-macos-arm64.app
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    result=0
-    just _vm64-compile-macos-native || result=$?
+    set +o pipefail
+    just _vm64-compile-macos-native 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         BUILD_DIR="{{BUILD_MACOS}}"
         mkdir -p "{{justfile_directory()}}/artifacts"
-        cp -R "$BUILD_DIR/Self.app" "{{justfile_directory()}}/artifacts/Self-vm64-macos-arm64.app"
-        just _pass "vm64-macos-native"
-    else
-        just _fail "vm64-macos-native"
+        cp -R "$BUILD_DIR/Self.app" "{{justfile_directory()}}/artifacts/Self-vm64-macos-arm64.app" || result=$?
     fi
     exit $result
 
@@ -233,22 +252,39 @@ vm64-macos-native:
 vm64-ubuntu-arm64:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm64-ubuntu-arm64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-ubuntu-arm64 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-ubuntu-arm64
+    just start-ubuntu-arm64 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat ubuntu-arm64.port)
-    result=0
-    just _vm64-compile-ubuntu-arm64 "$PORT" || result=$?
+    set +o pipefail
+    just _vm64-compile-ubuntu-arm64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm64-ubuntu-arm64"
-    fi
-    just stop-ubuntu-arm64
-    if [ $result -eq 0 ]; then
-        just _pass "vm64-ubuntu-arm64"
-    else
-        just _fail "vm64-ubuntu-arm64"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -257,22 +293,39 @@ vm64-ubuntu-arm64:
 vm64-ubuntu-amd64:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm64-ubuntu-amd64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-ubuntu-amd64 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-ubuntu-amd64
+    just start-ubuntu-amd64 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat ubuntu-amd64.port)
-    result=0
-    just _vm64-compile-ubuntu-amd64 "$PORT" || result=$?
+    set +o pipefail
+    just _vm64-compile-ubuntu-amd64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm64-ubuntu-amd64"
-    fi
-    just stop-ubuntu-amd64
-    if [ $result -eq 0 ]; then
-        just _pass "vm64-ubuntu-amd64"
-    else
-        just _fail "vm64-ubuntu-amd64"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -281,22 +334,39 @@ vm64-ubuntu-amd64:
 vm64-freebsd-arm64:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm64-freebsd-arm64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-freebsd-arm64 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-freebsd-arm64
+    just start-freebsd-arm64 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat freebsd-arm64.port)
-    result=0
-    just _vm64-compile-freebsd-arm64 "$PORT" || result=$?
+    set +o pipefail
+    just _vm64-compile-freebsd-arm64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm64-freebsd-arm64"
-    fi
-    just stop-freebsd-arm64
-    if [ $result -eq 0 ]; then
-        just _pass "vm64-freebsd-arm64"
-    else
-        just _fail "vm64-freebsd-arm64"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -305,22 +375,39 @@ vm64-freebsd-arm64:
 vm64-freebsd-amd64:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm64-freebsd-amd64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-freebsd-amd64 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-freebsd-amd64
+    just start-freebsd-amd64 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat freebsd-amd64.port)
-    result=0
-    just _vm64-compile-freebsd-amd64 "$PORT" || result=$?
+    set +o pipefail
+    just _vm64-compile-freebsd-amd64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm64-freebsd-amd64"
-    fi
-    just stop-freebsd-amd64
-    if [ $result -eq 0 ]; then
-        just _pass "vm64-freebsd-amd64"
-    else
-        just _fail "vm64-freebsd-amd64"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -329,22 +416,80 @@ vm64-freebsd-amd64:
 vm64-netbsd-amd64:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm64-netbsd-amd64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-netbsd-amd64 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-netbsd-amd64
+    just start-netbsd-amd64 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat netbsd-amd64.port)
-    result=0
-    just _vm64-compile-netbsd-amd64 "$PORT" || result=$?
+    set +o pipefail
+    just _vm64-compile-netbsd-amd64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm64-netbsd-amd64"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
-    just stop-netbsd-amd64
+    exit $result
+
+# Build and test vm64 on NetBSD ARM64 (TCG-emulated)
+[group('vm64')]
+vm64-netbsd-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NAME=vm64-netbsd-arm64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-netbsd-arm64 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
+    just _check-src
+    just start-netbsd-arm64 2>&1 | tee -a "$LOG"
+    VM_UP=1
+    PORT=$(cat netbsd-arm64.port)
+    set +o pipefail
+    just _vm64-compile-netbsd-arm64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
-        just _pass "vm64-netbsd-amd64"
-    else
-        just _fail "vm64-netbsd-amd64"
+        mkdir -p artifacts
+        sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -P "$PORT" \
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -357,22 +502,39 @@ vm64-netbsd-amd64:
 vm32-ubuntu-amd64:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm32-ubuntu-amd64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-ubuntu-amd64-multilib 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-ubuntu-amd64-multilib
+    just start-ubuntu-amd64-multilib 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat ubuntu-amd64-multilib.port)
-    result=0
-    just _vm32-compile-ubuntu-amd64 "$PORT" || result=$?
+    set +o pipefail
+    just _vm32-compile-ubuntu-amd64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm32-ubuntu-amd64"
-    fi
-    just stop-ubuntu-amd64-multilib
-    if [ $result -eq 0 ]; then
-        just _pass "vm32-ubuntu-amd64"
-    else
-        just _fail "vm32-ubuntu-amd64"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -381,22 +543,39 @@ vm32-ubuntu-amd64:
 vm32-freebsd-amd64-lib32:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm32-freebsd-amd64-lib32
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-freebsd-amd64-lib32 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-freebsd-amd64-lib32
+    just start-freebsd-amd64-lib32 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat freebsd-amd64-lib32.port)
-    result=0
-    just _vm32-compile-freebsd-amd64-lib32 "$PORT" || result=$?
+    set +o pipefail
+    just _vm32-compile-freebsd-amd64-lib32 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm32-freebsd-amd64-lib32"
-    fi
-    just stop-freebsd-amd64-lib32
-    if [ $result -eq 0 ]; then
-        just _pass "vm32-freebsd-amd64-lib32"
-    else
-        just _fail "vm32-freebsd-amd64-lib32"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -405,22 +584,39 @@ vm32-freebsd-amd64-lib32:
 vm32-netbsd-i386:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm32-netbsd-i386
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-netbsd-i386 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-netbsd-i386
+    just start-netbsd-i386 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat netbsd-i386.port)
-    result=0
-    just _vm32-compile-netbsd-i386 "$PORT" || result=$?
+    set +o pipefail
+    just _vm32-compile-netbsd-i386 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm32-netbsd-i386"
-    fi
-    just stop-netbsd-i386
-    if [ $result -eq 0 ]; then
-        just _pass "vm32-netbsd-i386"
-    else
-        just _fail "vm32-netbsd-i386"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -429,22 +625,39 @@ vm32-netbsd-i386:
 vm32-netbsd-macppc:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm32-netbsd-macppc
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-netbsd-macppc 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-netbsd-macppc
+    just start-netbsd-macppc 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat netbsd-macppc.port)
-    result=0
-    just _vm32-compile-netbsd-macppc "$PORT" || result=$?
+    set +o pipefail
+    just _vm32-compile-netbsd-macppc "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm32-netbsd-macppc"
-    fi
-    just stop-netbsd-macppc
-    if [ $result -eq 0 ]; then
-        just _pass "vm32-netbsd-macppc"
-    else
-        just _fail "vm32-netbsd-macppc"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -454,22 +667,39 @@ vm32-netbsd-macppc:
 vm32-netbsd-sparc64:
     #!/usr/bin/env bash
     set -euo pipefail
+    NAME=vm32-netbsd-sparc64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    finalize() {
+        local code=$?
+        [ $VM_UP -eq 1 ] && just stop-netbsd-sparc64 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" FAIL $elapsed ""
+            just _fail "$NAME"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
     just _check-src
-    just start-netbsd-sparc64
+    just start-netbsd-sparc64 2>&1 | tee -a "$LOG"
+    VM_UP=1
     PORT=$(cat netbsd-sparc64.port)
-    result=0
-    just _vm32-compile-netbsd-sparc64 "$PORT" || result=$?
+    set +o pipefail
+    just _vm32-compile-netbsd-sparc64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
     if [ $result -eq 0 ]; then
         mkdir -p artifacts
         sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -P "$PORT" \
-            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-vm32-netbsd-sparc64"
-    fi
-    just stop-netbsd-sparc64
-    if [ $result -eq 0 ]; then
-        just _pass "vm32-netbsd-sparc64"
-    else
-        just _fail "vm32-netbsd-sparc64"
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
     fi
     exit $result
 
@@ -541,6 +771,16 @@ _vm64-compile-netbsd-amd64 port:
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
     @just _banner "Finished vm64 on NetBSD AMD64"
 
+_vm64-compile-netbsd-arm64 port:
+    @just _action "Compiling vm64 on NetBSD ARM64"
+    @just _rsync {{port}}
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm64 -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF && rm -f build/incls/_precompiled.hh.gch && cmake --build build -j$(sysctl -n hw.ncpu)'
+    @just do {{port}} 'cd /tmp/self-build && build/Self --vm-run-tests'
+    @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap64'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
+    @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap64'
+    @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
+    @just _banner "Finished vm64 on NetBSD ARM64"
+
 # ═══════════════════════════════════════════════════════════
 #  vm32 Compile (internal)
 # ═══════════════════════════════════════════════════════════
@@ -605,24 +845,24 @@ provision-ubuntu-arm64:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p images
-    if [ ! -f "{{UBUNTU_ARM64_QCOW}}" ]; then
+    if [ -f "{{UBUNTU_ARM64_QCOW}}" ]; then
+        just _action "Image already exists: {{UBUNTU_ARM64_QCOW}} (delete to force re-provision)"
+    else
         just _action "Downloading Ubuntu ARM64 cloud image"
         curl -L -o "{{UBUNTU_ARM64_QCOW}}" "{{UBUNTU_ARM64_URL}}"
         qemu-img resize "{{UBUNTU_ARM64_QCOW}}" 20G
-    else
-        echo "Image already exists: {{UBUNTU_ARM64_QCOW}}"
+        just _create-cloud-init-arm64
+        just _action "Provisioning Ubuntu ARM64 via cloud-init (will shut down automatically when done)"
+        PORT=$(just _free-port)
+        qemu-system-aarch64 \
+            -machine virt -accel hvf -cpu host \
+            -m 4G -smp 4 \
+            -drive file={{UBUNTU_ARM64_QCOW}},if=virtio \
+            -drive file=images/cloud-init-arm64.iso,if=virtio,media=cdrom \
+            -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+            -nic user,hostfwd=tcp::${PORT}-:22 \
+            -nographic
     fi
-    just _create-cloud-init-arm64
-    just _action "Provisioning Ubuntu ARM64 via cloud-init (will shut down automatically when done)"
-    PORT=$(just _free-port)
-    qemu-system-aarch64 \
-        -machine virt -accel hvf -cpu host \
-        -m 4G -smp 4 \
-        -drive file={{UBUNTU_ARM64_QCOW}},if=virtio \
-        -drive file=images/cloud-init-arm64.iso,if=virtio,media=cdrom \
-        -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
-        -nic user,hostfwd=tcp::${PORT}-:22 \
-        -nographic
     just _banner "Ubuntu ARM64 image ready"
 
 # Download and provision Ubuntu AMD64 (vm64 only)
@@ -631,23 +871,23 @@ provision-ubuntu-amd64:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p images
-    if [ ! -f "{{UBUNTU_AMD64_QCOW}}" ]; then
+    if [ -f "{{UBUNTU_AMD64_QCOW}}" ]; then
+        just _action "Image already exists: {{UBUNTU_AMD64_QCOW}} (delete to force re-provision)"
+    else
         just _action "Downloading Ubuntu AMD64 cloud image"
         curl -L -o "{{UBUNTU_AMD64_QCOW}}" "{{UBUNTU_AMD64_URL}}"
         qemu-img resize "{{UBUNTU_AMD64_QCOW}}" 20G
-    else
-        echo "Image already exists: {{UBUNTU_AMD64_QCOW}}"
+        just _create-cloud-init-amd64
+        just _action "Provisioning Ubuntu AMD64 via cloud-init (will shut down automatically when done)"
+        PORT=$(just _free-port)
+        qemu-system-x86_64 \
+            -machine q35 -cpu qemu64 \
+            -m 4G -smp 2 \
+            -drive file={{UBUNTU_AMD64_QCOW}},if=virtio \
+            -drive file=images/cloud-init-amd64.iso,if=virtio,media=cdrom \
+            -nic user,hostfwd=tcp::${PORT}-:22 \
+            -nographic
     fi
-    just _create-cloud-init-amd64
-    just _action "Provisioning Ubuntu AMD64 via cloud-init (will shut down automatically when done)"
-    PORT=$(just _free-port)
-    qemu-system-x86_64 \
-        -machine q35 -cpu qemu64 \
-        -m 4G -smp 2 \
-        -drive file={{UBUNTU_AMD64_QCOW}},if=virtio \
-        -drive file=images/cloud-init-amd64.iso,if=virtio,media=cdrom \
-        -nic user,hostfwd=tcp::${PORT}-:22 \
-        -nographic
     just _banner "Ubuntu AMD64 image ready"
 
 # Download and provision Ubuntu AMD64 multilib (vm 32-bit builds)
@@ -656,23 +896,23 @@ provision-ubuntu-amd64-multilib:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p images
-    if [ ! -f "{{UBUNTU_MULTILIB_QCOW}}" ]; then
+    if [ -f "{{UBUNTU_MULTILIB_QCOW}}" ]; then
+        just _action "Image already exists: {{UBUNTU_MULTILIB_QCOW}} (delete to force re-provision)"
+    else
         just _action "Downloading Ubuntu AMD64 cloud image (for multilib)"
         curl -L -o "{{UBUNTU_MULTILIB_QCOW}}" "{{UBUNTU_AMD64_URL}}"
         qemu-img resize "{{UBUNTU_MULTILIB_QCOW}}" 20G
-    else
-        echo "Image already exists: {{UBUNTU_MULTILIB_QCOW}}"
+        just _create-cloud-init-amd64-multilib
+        just _action "Provisioning Ubuntu AMD64 multilib via cloud-init (will shut down automatically when done)"
+        PORT=$(just _free-port)
+        qemu-system-x86_64 \
+            -machine q35 -cpu qemu64 \
+            -m 4G -smp 2 \
+            -drive file={{UBUNTU_MULTILIB_QCOW}},if=virtio \
+            -drive file=images/cloud-init-amd64-multilib.iso,if=virtio,media=cdrom \
+            -nic user,hostfwd=tcp::${PORT}-:22 \
+            -nographic
     fi
-    just _create-cloud-init-amd64-multilib
-    just _action "Provisioning Ubuntu AMD64 multilib via cloud-init (will shut down automatically when done)"
-    PORT=$(just _free-port)
-    qemu-system-x86_64 \
-        -machine q35 -cpu qemu64 \
-        -m 4G -smp 2 \
-        -drive file={{UBUNTU_MULTILIB_QCOW}},if=virtio \
-        -drive file=images/cloud-init-amd64-multilib.iso,if=virtio,media=cdrom \
-        -nic user,hostfwd=tcp::${PORT}-:22 \
-        -nographic
     just _banner "Ubuntu AMD64 multilib image ready"
 
 # Download and provision FreeBSD AMD64 lib32 (vm 32-bit builds)
@@ -813,11 +1053,11 @@ provision-netbsd-i386:
     just _action "Phase A: anita install (minimal --run)"
     uvx --from git+https://github.com/gson1703/anita.git --with pexpect anita \
         --workdir "$workdir" \
-        --disk-size 20G \
+        --disk-size 8G \
         --memory-size 2G \
         --persist \
         --sets kern-GENERIC,modules,base,etc,comp,xbase,xcomp \
-        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_wm0=dhcp >> /etc/rc.conf && ssh-keygen -A && dhcpcd wm0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/i386/10.0/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
+        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_wm0=dhcp >> /etc/rc.conf && ssh-keygen -A && echo noipv6rs >> /etc/dhcpcd.conf && dhcpcd wm0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/i386/10.0/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
         boot \
         "{{NETBSD_I386_URL}}"
     just _action "Converting wd0.img → qcow2"
@@ -869,11 +1109,11 @@ provision-netbsd-amd64:
     just _action "Phase A: anita install (minimal --run)"
     uvx --from git+https://github.com/gson1703/anita.git --with pexpect anita \
         --workdir "$workdir" \
-        --disk-size 20G \
+        --disk-size 8G \
         --memory-size 2G \
         --persist \
         --sets kern-GENERIC,modules,base,etc,comp,xbase,xcomp \
-        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_wm0=dhcp >> /etc/rc.conf && ssh-keygen -A && dhcpcd wm0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/amd64/10.0/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
+        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_wm0=dhcp >> /etc/rc.conf && ssh-keygen -A && echo noipv6rs >> /etc/dhcpcd.conf && dhcpcd wm0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/amd64/10.0/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
         boot \
         "{{NETBSD_AMD64_URL}}"
     just _action "Converting wd0.img → qcow2"
@@ -905,6 +1145,111 @@ provision-netbsd-amd64:
     just _stop-vm netbsd-amd64-provision.pid "$PORT"
     just _banner "NetBSD AMD64 image ready"
 
+# Download and provision NetBSD ARM64 (vm64 + vm32 share the same image)
+#
+# Unlike the i386/amd64/macppc/sparc64 NetBSD ports, evbarm-aarch64 has no
+# sysinst installer in NetBSD 10.1 — the standard distribution path is the
+# pre-built `binary/gzimg/arm64.img.gz`. Anita knows about this: for archs
+# with `image_name` set (evbarm-aarch64, evbarm-earmv7hf, riscv64), it
+# short-circuits download() and boots the gzimg directly instead of running
+# sysinst. The --sets list is still validated by anita up front, so we pass
+# the minimum it accepts (`base,etc,kern-GENERIC`) — those names are not
+# actually used at install time for an image-based arch.
+#
+# qemu's virtio-net appears as vioif0 in NetBSD (not wm0).
+#
+# Phase A boot is via -kernel (not UEFI/edk2) since anita uses that path and
+# the gzimg's EFI partition isn't relied on. We re-use the same boot model in
+# start-netbsd-arm64 and in Phase B.
+#
+# Phase A is skipped if the qcow already exists — re-running this recipe to
+# retry Phase B is fast. Delete the qcow to force a full reinstall.
+[group('Provision')]
+provision-netbsd-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p images
+    workdir="images/netbsd-arm64-anita"
+    if [ ! -f "{{NETBSD_ARM64_QCOW}}" ]; then
+        #
+        # Phase A: anita boots the pre-built gzimg + minimal --run (user,
+        # sshd, network, sudo, sudoers). No sysinst — the image is already
+        # installed. qemu's default user-mode networking gives anita a NIC
+        # implicitly, so dhcpcd vioif0 + pkg_add sudo work inside --run.
+        #
+        just _action "Phase A: anita boots gzimg (minimal --run)"
+        uvx --from git+https://github.com/gson1703/anita.git --with pexpect anita \
+            --workdir "$workdir" \
+            --disk-size 8G \
+            --memory-size 4G \
+            --persist \
+            --sets base,etc,kern-GENERIC \
+            --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_vioif0=dhcp >> /etc/rc.conf && ssh-keygen -A && echo noipv6rs >> /etc/dhcpcd.conf && dhcpcd vioif0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/aarch64/10.0/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
+            boot \
+            "{{NETBSD_ARM64_URL}}"
+        just _action "Converting wd0.img → qcow2"
+        qemu-img convert -f raw -O qcow2 "$workdir/wd0.img" "{{NETBSD_ARM64_QCOW}}"
+        cp "$workdir/download/evbarm-aarch64/binary/kernel/netbsd-GENERIC64.img.gz" \
+            images/netbsd-arm64-kernel.img.gz
+    else
+        just _action "Phase A: skipping (qcow exists at {{NETBSD_ARM64_QCOW}}; delete to force reinstall)"
+    fi
+    #
+    # Phase B: boot the qcow2 normally (persistent writes), ssh in as ci, run
+    # pkgin install. Re-runs of this recipe pick up here.
+    #
+    just _action "Phase B: booting qcow2 to install pkgsrc packages"
+    PORT=$(just _free-port)
+    trap '[ -f netbsd-arm64-provision.pid ] && kill "$(cat netbsd-arm64-provision.pid)" 2>/dev/null; rm -f netbsd-arm64-provision.pid' EXIT
+    qemu-system-aarch64 \
+        -M virt,gic-version=3 -accel hvf -cpu host \
+        -m 4G -smp 4 \
+        -drive file={{NETBSD_ARM64_QCOW}},if=none,id=hd0 \
+        -device virtio-blk-device,drive=hd0 \
+        -kernel images/netbsd-arm64-kernel.img.gz \
+        -append 'root=NAME=netbsd-root' \
+        -netdev user,id=net0,hostfwd=tcp::${PORT}-:22 \
+        -device virtio-net-pci,netdev=net0 \
+        -pidfile netbsd-arm64-provision.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    #
+    # Phase B is split into one SSH call per step so the host-side log shows
+    # progress, and uses ServerAliveInterval to keep long-running ops from
+    # appearing hung due to silent pkgin output.
+    #
+    # qemu's slirp advertises a fec0::/64 prefix via RA, and dhcpcd's IPv6
+    # stack SLAACs a fec0:: address onto vioif0. Slirp doesn't actually route
+    # IPv6 outbound, but NetBSD's resolver + libfetch see a global-looking
+    # IPv6 source addr and prefer AAAA records → pkgin hangs in SYN_SENT
+    # against the CDN's IPv6 endpoint. We bake `noipv6rs` into
+    # /etc/dhcpcd.conf so dhcpcd ignores future RAs, then strip the address
+    # already configured on this boot. After this, only fe80:: link-local
+    # remains; AI_ADDRCONFIG suppresses AAAA returns, and libfetch uses IPv4.
+    # The fix is persistent — `start-netbsd-arm64` snapshot boots inherit it.
+    #
+    SSH="sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -p $PORT ci@localhost"
+    P="export PATH=/usr/sbin:/sbin:/usr/bin:/bin:/usr/pkg/sbin:/usr/pkg/bin"
+    PKG="export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/aarch64/10.0/All"
+    just _action "Step 1/7: persisting noipv6rs in /etc/dhcpcd.conf and stripping current fec0:: from vioif0"
+    $SSH "$P && (grep -q '^noipv6rs' /etc/dhcpcd.conf || echo noipv6rs | sudo tee -a /etc/dhcpcd.conf) && for a in \$(ifconfig vioif0 | awk '/inet6/ && !/fe80/{print \$2}' | sed 's/%.*//'); do echo \"removing \$a\"; sudo ifconfig vioif0 inet6 -alias \"\$a\"; done && echo 'inet6 disable: ok'"
+    just _action "Step 2/7: verifying network state (vioif0 should have only fe80:: link-local IPv6)"
+    $SSH "$P && ifconfig vioif0 | sed 's/^/  /' && echo 'DNS lookup:' && host cdn.NetBSD.org 2>&1 | sed 's/^/  /' | head -8"
+    just _action "Step 3/7: pkg_add pkgin"
+    $SSH "$P && $PKG && sudo env PKG_PATH=\$PKG_PATH pkg_add pkgin"
+    just _action "Step 4/7: configuring pkgin repositories.conf"
+    $SSH "$P && $PKG && echo \"\$PKG_PATH\" | sudo tee /usr/pkg/etc/pkgin/repositories.conf"
+    # pkgin uses -v for "show version and exit" (not verbose); -V is verbose.
+    # We use plain pkgin update/install for moderate output that won't drown
+    # the terminal under TCG.
+    just _action "Step 5/7: pkgin -y update (TCG-emulated SQLite parse — slow but should not stall)"
+    $SSH "$P && $PKG && sudo env PKG_PATH=\$PKG_PATH pkgin -y update"
+    just _action "Step 6/7: pkgin -y install cmake gcc12 rsync jemalloc bash vim-share"
+    $SSH "$P && $PKG && sudo env PKG_PATH=\$PKG_PATH pkgin -y install cmake gcc12 rsync jemalloc bash vim-share"
+    just _action "Step 7/7: shutting down VM"
+    just _stop-vm netbsd-arm64-provision.pid "$PORT"
+    just _banner "NetBSD ARM64 image ready"
+
 # Download and provision NetBSD macppc (vm 32-bit, PowerPC, via Anita run through uvx)
 #
 # Same two-phase approach as netbsd-i386: anita drives sysinst over the serial
@@ -930,12 +1275,12 @@ provision-netbsd-macppc:
     # Also override the default `mac99` (cuda) → `mac99,via=pmu` for stability.
     uvx --from git+https://github.com/gson1703/anita.git --with pexpect anita \
         --workdir "$workdir" \
-        --disk-size 20G \
+        --disk-size 8G \
         --memory-size 2G \
         --persist \
         --sets kern-GENERIC,modules,base,etc,comp \
         --machine "mac99,via=pmu" \
-        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_gem0=dhcp >> /etc/rc.conf && ssh-keygen -A && dhcpcd gem0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/macppc/10.0/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
+        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_gem0=dhcp >> /etc/rc.conf && ssh-keygen -A && echo noipv6rs >> /etc/dhcpcd.conf && dhcpcd gem0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/macppc/10.0/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
         boot \
         "{{NETBSD_MACPPC_URL}}"
     just _action "Converting wd0.img → qcow2"
@@ -992,11 +1337,11 @@ provision-netbsd-sparc64:
     just _action "Phase A: anita install (minimal --run)"
     uvx --from git+https://github.com/gson1703/anita.git --with pexpect anita \
         --workdir "$workdir" \
-        --disk-size 20G \
+        --disk-size 8G \
         --memory-size 2G \
         --persist \
         --sets kern-GENERIC,modules,base,etc,comp,xbase,xcomp \
-        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_hme0=dhcp >> /etc/rc.conf && ssh-keygen -A && dhcpcd hme0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/sparc64/10.1/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
+        --run '{ (useradd -m -G wheel -s /bin/sh -p "$(openssl passwd -1 ci)" ci || true) && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && echo sshd=YES >> /etc/rc.conf && echo dhcpcd=YES >> /etc/rc.conf && echo ifconfig_hme0=dhcp >> /etc/rc.conf && ssh-keygen -A && echo noipv6rs >> /etc/dhcpcd.conf && dhcpcd hme0 && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/sparc64/10.1/All && pkg_add sudo && mkdir -p /usr/pkg/etc && echo "ci ALL=(ALL) NOPASSWD: ALL" > /usr/pkg/etc/sudoers && echo "ci ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers; }; echo PROVISION_EXIT=$?' \
         boot \
         "{{NETBSD_SPARC64_URL}}"
     just _action "Converting wd0.img → qcow2"
@@ -1338,6 +1683,41 @@ stop-netbsd-amd64:
     just _stop-vm netbsd-amd64.pid "$port"
     rm -f netbsd-amd64.port
 
+# Boot NetBSD ARM64 VM (snapshot mode, for vm64 + vm32)
+#
+# Boot model matches anita: -M virt with the kernel passed directly via
+# -kernel (no UEFI/edk2). Disk is virtio-blk; root is found by GPT label.
+# HVF-accelerated on Apple Silicon: GENERIC64 is a generic ARMv8-A kernel, so
+# -cpu host works (the cortex-a57 default was only relevant for TCG emulation).
+[group('Advanced')]
+start-netbsd-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Starting NetBSD ARM64 VM"
+    PORT=$(just _free-port)
+    echo "$PORT" > netbsd-arm64.port
+    qemu-system-aarch64 \
+        -M virt,gic-version=3 -accel hvf -cpu host \
+        -m 4G -smp 4 \
+        -drive file={{NETBSD_ARM64_QCOW}},if=none,id=hd0,snapshot=on \
+        -device virtio-blk-device,drive=hd0 \
+        -kernel images/netbsd-arm64-kernel.img.gz \
+        -append 'root=NAME=netbsd-root' \
+        -netdev user,id=net0,hostfwd=tcp::${PORT}-:22 \
+        -device virtio-net-pci,netdev=net0 \
+        -pidfile netbsd-arm64.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _banner "NetBSD ARM64 VM running on port $PORT"
+
+# Shut down NetBSD ARM64 VM
+[group('Advanced')]
+stop-netbsd-arm64:
+    #!/usr/bin/env bash
+    port=$(cat netbsd-arm64.port 2>/dev/null || echo "0")
+    just _stop-vm netbsd-arm64.pid "$port"
+    rm -f netbsd-arm64.port
+
 # Boot NetBSD macppc VM (snapshot mode, TCG-emulated, for vm32)
 [group('Advanced')]
 start-netbsd-macppc:
@@ -1416,11 +1796,142 @@ term port:
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR
 
+# Mount a host directory inside a running VM via reverse SSHFS
+[group('Advanced')]
+mount port host_dir guest_dir='/mnt/host':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    RAW="{{host_dir}}"
+    RAW="${RAW/#\~/$HOME}"
+    HOST_DIR=$(cd "$RAW" 2>/dev/null && pwd) || { just _fail "host directory not found: {{host_dir}}"; exit 1; }
+    just _ensure-mount-key
+    just _ensure-mount-sshd
+    HOST_USER=$(whoami)
+    SSHD_PORT=$(cat mount.sshd.port)
+    just _action "Mounting $HOST_DIR → {{guest_dir}} on port {{port}}"
+    sshpass -p ci scp -P {{port}} \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR \
+        mount.key ci@localhost:/tmp/mount.key
+    just do {{port}} "chmod 600 /tmp/mount.key"
+    SSHFS_OPTS="allow_other,IdentityFile=/tmp/mount.key,StrictHostKeyChecking=accept-new,UserKnownHostsFile=/dev/null,reconnect,port=${SSHD_PORT}"
+    PSSHFS_ARGS="ssh_args=-p ${SSHD_PORT} -i /tmp/mount.key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
+    REMOTE="${HOST_USER}@10.0.2.2:${HOST_DIR}"
+    SCRIPT=$(cat <<EOF
+    set -e
+    sudo mkdir -p {{guest_dir}}
+    OS=\$(uname -s)
+    if [ "\$OS" = Linux ]; then
+        command -v sshfs >/dev/null || { echo "ERROR: sshfs missing in guest; re-provision the VM image (rm images/<vm>.qcow2 && just provision-<vm>)" >&2; exit 1; }
+        sudo sshfs -o ${SSHFS_OPTS} ${REMOTE} {{guest_dir}}
+    elif [ "\$OS" = FreeBSD ]; then
+        command -v sshfs >/dev/null || { echo "ERROR: fusefs-sshfs missing in guest; re-provision the VM image (rm images/<vm>.qcow2 && just provision-<vm>)" >&2; exit 1; }
+        kldstat -q -m fusefs || { echo "ERROR: fusefs module not loaded; re-provision the VM so /boot/loader.conf has fusefs_load=YES" >&2; exit 1; }
+        sudo sshfs -o ${SSHFS_OPTS} ${REMOTE} {{guest_dir}}
+    elif [ "\$OS" = NetBSD ]; then
+        sudo mount_psshfs -o "${PSSHFS_ARGS}" ${REMOTE} {{guest_dir}}
+    else
+        echo "unsupported guest OS: \$OS" >&2
+        exit 1
+    fi
+    EOF
+    )
+    just do {{port}} "$SCRIPT"
+    just _banner "Mounted $HOST_DIR → {{guest_dir}} on port {{port}}"
+
+# Unmount a previously mounted host directory inside a running VM
+[group('Advanced')]
+unmount port guest_dir='/mnt/host':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Unmounting {{guest_dir}} on port {{port}}"
+    just do {{port}} "sudo umount {{guest_dir}}"
+    just _banner "Unmounted {{guest_dir}} on port {{port}}"
+
+# Stop the project-local sshd that backs `just mount`
+[group('Advanced')]
+mount-sshd-stop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -f mount.sshd.pid ] && kill -0 "$(cat mount.sshd.pid)" 2>/dev/null; then
+        kill "$(cat mount.sshd.pid)" 2>/dev/null || true
+        just _banner "Stopped project sshd"
+    fi
+    rm -f mount.sshd.pid mount.sshd.port
+
+# Show the status of the project-local sshd
+[group('Advanced')]
+mount-sshd-status:
+    #!/usr/bin/env bash
+    if [ -f mount.sshd.pid ] && kill -0 "$(cat mount.sshd.pid)" 2>/dev/null; then
+        echo "running   pid=$(cat mount.sshd.pid)   port=$(cat mount.sshd.port 2>/dev/null || echo ?)"
+    else
+        echo "not running"
+    fi
+
+_ensure-mount-key:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f mount.key ]; then
+        ssh-keygen -t ed25519 -N '' -C 'self-ci mount key' -f mount.key >/dev/null
+    fi
+
+_ensure-mount-sshd:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -f mount.sshd.pid ] && kill -0 "$(cat mount.sshd.pid)" 2>/dev/null; then
+        exit 0
+    fi
+    rm -f mount.sshd.pid mount.sshd.port
+    if [ ! -f mount.host_key ]; then
+        ssh-keygen -t ed25519 -N '' -C 'self-ci mount host key' -f mount.host_key >/dev/null
+    fi
+    cp mount.key.pub mount.authorized_keys
+    chmod 600 mount.authorized_keys mount.host_key
+    ABS=$(pwd)
+    USER_NAME=$(whoami)
+    cat > mount.sshd_config <<EOF
+    HostKey                         ${ABS}/mount.host_key
+    AuthorizedKeysFile              ${ABS}/mount.authorized_keys
+    PidFile                         ${ABS}/mount.sshd.pid
+    ListenAddress                   127.0.0.1
+    PasswordAuthentication          no
+    KbdInteractiveAuthentication    no
+    ChallengeResponseAuthentication no
+    PubkeyAuthentication            yes
+    PermitRootLogin                 no
+    UsePAM                          no
+    StrictModes                     no
+    AllowUsers                      ${USER_NAME}
+    LogLevel                        INFO
+    Subsystem                       sftp /usr/libexec/sftp-server
+    EOF
+    PORT=$(just _free-port)
+    echo "$PORT" > mount.sshd.port
+    just _action "Starting project sshd on 127.0.0.1:${PORT}"
+    /usr/sbin/sshd -D -e -f "${ABS}/mount.sshd_config" -p "${PORT}" >mount.sshd.log 2>&1 &
+    SSHD_PID=$!
+    echo "$SSHD_PID" > mount.sshd.pid
+    for i in $(seq 1 30); do
+        if nc -z 127.0.0.1 "$PORT" 2>/dev/null; then exit 0; fi
+        if ! kill -0 "$SSHD_PID" 2>/dev/null; then
+            just _fail "project sshd died at startup; tail of mount.sshd.log:"
+            tail -20 mount.sshd.log >&2 || true
+            rm -f mount.sshd.pid mount.sshd.port
+            exit 1
+        fi
+        sleep 0.1
+    done
+    just _fail "project sshd not listening within 3s"
+    tail -20 mount.sshd.log >&2 || true
+    exit 1
+
 # Delete all images and logs
 [group('Advanced')]
 reset-everything:
+    -just mount-sshd-stop
     rm -rf images/ logs/ build/
-    rm -f *.pid *.port
+    rm -f *.pid *.port mount.*
     @just _banner "All images, logs, and builds deleted"
 
 # ═══════════════════════════════════════════════════════════
@@ -1455,7 +1966,7 @@ _wait-for-ssh port:
 _stop-vm pidfile port:
     #!/usr/bin/env bash
     sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -o LogLevel=ERROR -p {{port}} ci@localhost "sudo sync; sudo sync; sudo poweroff" 2>/dev/null || true
+        -o LogLevel=ERROR -p {{port}} ci@localhost "sudo sync; sudo sync; { sudo poweroff 2>/dev/null || sudo /sbin/shutdown -hp now; }" 2>/dev/null || true
     if [ -f {{pidfile}} ]; then
         pid=$(cat {{pidfile}})
         for i in $(seq 1 120); do
@@ -1498,6 +2009,7 @@ _create-cloud-init-arm64:
       - libxext-dev
       - libncurses-dev
       - rsync
+      - sshfs
 
     runcmd:
       - systemctl enable ssh
@@ -1554,6 +2066,7 @@ _create-cloud-init-amd64:
       - libxext-dev
       - libncurses-dev
       - rsync
+      - sshfs
 
     runcmd:
       - systemctl enable ssh
@@ -1613,6 +2126,7 @@ _create-cloud-init-amd64-multilib:
       - rsync
       - gcc-multilib
       - g++-multilib
+      - sshfs
 
     runcmd:
       - apt-get install -y libx11-dev:i386 libxext-dev:i386 libncurses-dev:i386
@@ -1669,11 +2183,13 @@ _create-cloud-init-freebsd-amd64-lib32:
       - bash
       - xxd
       - sudo
+      - fusefs-sshfs
 
     runcmd:
       - ssh-keygen -A
       - sed -i '' 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
       - sysrc sshd_enable=YES
+      - sysrc -f /boot/loader.conf fusefs_load=YES
       - fetch -o /tmp/base.txz https://download.freebsd.org/releases/i386/14.4-RELEASE/base.txz
       - mkdir -p /compat/i386
       - tar -xf /tmp/base.txz -C /compat/i386
@@ -1737,11 +2253,13 @@ _create-cloud-init-freebsd-amd64:
       - libX11
       - libXext
       - ncurses
+      - fusefs-sshfs
 
     runcmd:
       - ssh-keygen -A
       - sed -i '' 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
       - sysrc sshd_enable=YES
+      - sysrc -f /boot/loader.conf fusefs_load=YES
       - service sshd start
     EOF
     if command -v mkisofs &>/dev/null; then
@@ -1794,11 +2312,13 @@ _create-cloud-init-freebsd-arm64:
       - libX11
       - libXext
       - ncurses
+      - fusefs-sshfs
 
     runcmd:
       - ssh-keygen -A
       - sed -i '' 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
       - sysrc sshd_enable=YES
+      - sysrc -f /boot/loader.conf fusefs_load=YES
       - service sshd start
     EOF
     if command -v mkisofs &>/dev/null; then
@@ -1826,3 +2346,174 @@ _banner *ARGS:
 
 _action *ARGS:
     @echo "$(tput setaf 208)$(tput bold)[$(date +%H:%M:%S)] {{ARGS}}$(tput sgr0)"
+
+# Write a per-build status sidecar consumed by _generate-report.
+# Format: RESULT|ELAPSED_SEC|ARTIFACT_BASENAME|COMMIT|REMOTE_URL
+# COMMIT may be empty (src not a git repo) or have a "-dirty" suffix.
+# REMOTE_URL may be empty (no origin) or non-GitHub.
+[private]
+_record-status name result elapsed artifact:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    SRCDIR="{{SRCDIR}}"
+    COMMIT=""
+    REMOTE=""
+    if [ -n "$SRCDIR" ] && git -C "$SRCDIR" rev-parse --git-dir >/dev/null 2>&1; then
+        COMMIT=$(git -C "$SRCDIR" rev-parse HEAD 2>/dev/null || true)
+        if [ -n "$COMMIT" ]; then
+            if ! git -C "$SRCDIR" diff --quiet 2>/dev/null || ! git -C "$SRCDIR" diff --cached --quiet 2>/dev/null; then
+                COMMIT="${COMMIT}-dirty"
+            fi
+        fi
+        REMOTE=$(git -C "$SRCDIR" remote get-url origin 2>/dev/null || true)
+    fi
+    printf '%s|%s|%s|%s|%s\n' "{{result}}" "{{elapsed}}" "{{artifact}}" "$COMMIT" "$REMOTE" \
+        > "{{justfile_directory()}}/artifacts/logs/{{name}}.status"
+
+# Generate artifacts/index.html from the status sidecars and log files.
+# Idempotent — safe to call from any vm*-<platform> recipe.
+[private]
+_generate-report:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REPORT_DIR="{{justfile_directory()}}/artifacts"
+    LOGS_DIR="$REPORT_DIR/logs"
+    OUT="$REPORT_DIR/index.html"
+    mkdir -p "$LOGS_DIR"
+
+    shopt -s nullglob
+    statuses=("$LOGS_DIR"/*.status)
+    shopt -u nullglob
+
+    # ANSI-strip + HTML-escape in a single python invocation.
+    sanitize() { python3 -c 'import html, re, sys; s = sys.stdin.read(); s = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", s); sys.stdout.write(html.escape(s))'; }
+
+    # Convert a git remote URL + commit sha into a GitHub commit URL.
+    # Prints nothing when the remote isn't recognised as GitHub.
+    # Strips any "-dirty" suffix from the sha before building the URL.
+    github_commit_url() {
+        local remote=$1 sha=$2 path=""
+        case "$remote" in
+            git@github.com:*)     path=${remote#git@github.com:} ;;
+            https://github.com/*) path=${remote#https://github.com/} ;;
+            *) return ;;
+        esac
+        path=${path%.git}
+        printf 'https://github.com/%s/commit/%s' "$path" "${sha%-dirty}"
+    }
+
+    passes=0; fails=0
+    if [ "${#statuses[@]}" -gt 0 ]; then
+        for sf in "${statuses[@]}"; do
+            r=$(cut -d'|' -f1 "$sf")
+            case "$r" in PASS) passes=$((passes+1));; FAIL) fails=$((fails+1));; esac
+        done
+    fi
+
+    now=$(date '+%Y-%m-%d %H:%M')
+    selfsrc_html=$(printf '%s' "${SELFSRC:-}" | sanitize)
+    [ -z "$selfsrc_html" ] && selfsrc_html='<span class="muted">(unset)</span>'
+
+    {
+        cat <<'HEADER'
+    <!doctype html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <title>Self CI — Build Report</title>
+    <style>
+    :root { color-scheme: light dark; }
+    body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
+    .meta { color: #666; margin: 0 0 1.5rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
+    th { background: rgba(127,127,127,0.08); font-weight: 600; }
+    code { font: 13px ui-monospace, "SF Mono", Menlo, monospace; }
+    .badge { display: inline-block; padding: 0.1em 0.65em; border-radius: 0.4em; font-weight: 600; font-size: 0.82em; letter-spacing: 0.02em; }
+    .pass { background: #cfecd0; color: #1b5e20; }
+    .fail { background: #f6cccc; color: #8b0000; }
+    .muted { color: #888; }
+    .dur, .when, .commit { white-space: nowrap; }
+    .links a { margin-right: 0.9em; }
+    .empty { color: #888; font-style: italic; }
+    @media (prefers-color-scheme: dark) {
+        body { background: #1a1a1a; color: #ddd; }
+        th { background: rgba(255,255,255,0.05); }
+        th, td { border-color: #333; }
+        .meta, .muted { color: #999; }
+        .pass { background: #2c5d3e; color: #d4f0d8; }
+        .fail { background: #5d2c2c; color: #f4d0d0; }
+        a { color: #8ab4f8; }
+    }
+    </style>
+    </head>
+    <body>
+    <h1>Self CI — Build Report</h1>
+    HEADER
+        printf '<p class="meta">Source: <code>%s</code> · Generated: %s · <strong>%d</strong> passed / <strong>%d</strong> failed</p>\n' \
+            "$selfsrc_html" "$now" "$passes" "$fails"
+
+        if [ "${#statuses[@]}" -eq 0 ]; then
+            cat <<'EMPTY'
+    <p class="empty">No builds recorded yet. Run <code>just fullrun-all</code> (or a single platform recipe like <code>just vm64-ubuntu-arm64</code>).</p>
+    EMPTY
+        else
+            cat <<'THEAD'
+    <table>
+    <thead><tr><th>Platform</th><th>Status</th><th>Duration</th><th>Last run</th><th>Commit</th><th>Links</th></tr></thead>
+    <tbody>
+    THEAD
+            # Stable order: sort by filename
+            sorted=$(printf '%s\n' "${statuses[@]}" | sort)
+            while IFS= read -r sf; do
+                name=$(basename "$sf" .status)
+                IFS='|' read -r result elapsed artifact commit remote < "$sf" || true
+                mins=$((elapsed / 60))
+                secs=$((elapsed % 60))
+                mtime=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$sf" 2>/dev/null || date '+%Y-%m-%d %H:%M')
+                badge_class="pass"
+                [ "$result" = FAIL ] && badge_class="fail"
+                name_html=$(printf '%s' "$name" | sanitize)
+                artifact_html=$(printf '%s' "$artifact" | sanitize)
+                # Commit cell: short hash, optionally linked to GitHub.
+                if [ -n "$commit" ]; then
+                    bare=${commit%-dirty}
+                    short=${bare:0:7}
+                    [ "$commit" != "$bare" ] && short="${short}-dirty"
+                    short_html=$(printf '%s' "$short" | sanitize)
+                    commit_url=$(github_commit_url "$remote" "$commit")
+                    if [ -n "$commit_url" ]; then
+                        commit_cell="<td class=\"commit\"><a href=\"$(printf '%s' "$commit_url" | sanitize)\"><code>$short_html</code></a></td>"
+                    else
+                        commit_cell="<td class=\"commit\"><code>$short_html</code></td>"
+                    fi
+                else
+                    commit_cell='<td class="commit muted">—</td>'
+                fi
+                printf '<tr>\n'
+                printf '  <td><code>%s</code></td>\n' "$name_html"
+                printf '  <td><span class="badge %s">%s</span></td>\n' "$badge_class" "$result"
+                printf '  <td class="dur">%dm %02ds</td>\n' "$mins" "$secs"
+                printf '  <td class="when">%s</td>\n' "$mtime"
+                printf '  %s\n' "$commit_cell"
+                printf '  <td class="links">\n'
+                printf '    <a href="logs/%s.log">View log</a>\n' "$name_html"
+                if [ "$result" = PASS ] && [ -n "$artifact" ]; then
+                    printf '    <a href="%s">Download</a>\n' "$artifact_html"
+                fi
+                printf '  </td>\n'
+                printf '</tr>\n'
+            done <<< "$sorted"
+            cat <<'TFOOT'
+    </tbody>
+    </table>
+    TFOOT
+        fi
+        cat <<'FOOTER'
+    </body>
+    </html>
+    FOOTER
+    } > "$OUT"
+    just _action "Report: $OUT"
