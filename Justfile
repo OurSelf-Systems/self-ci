@@ -17,6 +17,9 @@ SRCDIR := if SELFSRC == '' { '' } else { justfile_directory() + '/src/' + SELFSR
 BUILD_MACOS := justfile_directory() + '/build/macos-native'
 NCPU := `sysctl -n hw.ncpu 2>/dev/null || echo 4`
 
+# Per-platform wall-clock timeout. Override via env, e.g. RUN_TIMEOUT_SECS=7200 just vm64-ubuntu-amd64
+RUN_TIMEOUT_SECS := env('RUN_TIMEOUT_SECS', '7200')
+
 # ─── Images ─────────────────────────────────────────────
 
 # vm64 platforms
@@ -222,15 +225,32 @@ vm64-macos-native:
     LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
     : > "$LOG"
     START=$SECONDS
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed Self-vm64-macos-arm64.app
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -258,16 +278,33 @@ vm64-ubuntu-arm64:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-ubuntu-arm64 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -299,16 +336,33 @@ vm64-ubuntu-amd64:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-ubuntu-amd64 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -340,16 +394,33 @@ vm64-freebsd-arm64:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-freebsd-arm64 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -381,16 +452,33 @@ vm64-freebsd-amd64:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-freebsd-amd64 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -422,16 +510,33 @@ vm64-netbsd-amd64:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-netbsd-amd64 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -463,16 +568,33 @@ vm64-netbsd-arm64:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-netbsd-arm64 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -508,16 +630,33 @@ vm32-ubuntu-amd64:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-ubuntu-amd64-multilib 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -549,16 +688,33 @@ vm32-freebsd-amd64-lib32:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-freebsd-amd64-lib32 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -590,16 +746,33 @@ vm32-netbsd-i386:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-netbsd-i386 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -631,16 +804,33 @@ vm32-netbsd-macppc:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-netbsd-macppc 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -673,16 +863,33 @@ vm32-netbsd-sparc64:
     : > "$LOG"
     START=$SECONDS
     VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
     finalize() {
         local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
         [ $VM_UP -eq 1 ] && just stop-netbsd-sparc64 2>/dev/null || true
         local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
         if [ $code -eq 0 ]; then
             just _record-status "$NAME" PASS $elapsed "Self-$NAME"
             just _pass "$NAME"
         else
-            just _record-status "$NAME" FAIL $elapsed ""
-            just _fail "$NAME"
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
         fi
         just _generate-report
     }
@@ -2407,7 +2614,7 @@ _generate-report:
     if [ "${#statuses[@]}" -gt 0 ]; then
         for sf in "${statuses[@]}"; do
             r=$(cut -d'|' -f1 "$sf")
-            case "$r" in PASS) passes=$((passes+1));; FAIL) fails=$((fails+1));; esac
+            case "$r" in PASS) passes=$((passes+1));; FAIL|TIMEOUT) fails=$((fails+1));; esac
         done
     fi
 
@@ -2434,6 +2641,7 @@ _generate-report:
     .badge { display: inline-block; padding: 0.1em 0.65em; border-radius: 0.4em; font-weight: 600; font-size: 0.82em; letter-spacing: 0.02em; }
     .pass { background: #cfecd0; color: #1b5e20; }
     .fail { background: #f6cccc; color: #8b0000; }
+    .timeout { background: #fde7b3; color: #7a4a00; }
     .muted { color: #888; }
     .dur, .when, .commit { white-space: nowrap; }
     .links a { margin-right: 0.9em; }
@@ -2445,6 +2653,7 @@ _generate-report:
         .meta, .muted { color: #999; }
         .pass { background: #2c5d3e; color: #d4f0d8; }
         .fail { background: #5d2c2c; color: #f4d0d0; }
+        .timeout { background: #5d4a1e; color: #f5e2b1; }
         a { color: #8ab4f8; }
     }
     </style>
@@ -2473,8 +2682,11 @@ _generate-report:
                 mins=$((elapsed / 60))
                 secs=$((elapsed % 60))
                 mtime=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$sf" 2>/dev/null || date '+%Y-%m-%d %H:%M')
-                badge_class="pass"
-                [ "$result" = FAIL ] && badge_class="fail"
+                case "$result" in
+                    PASS)    badge_class="pass" ;;
+                    TIMEOUT) badge_class="timeout" ;;
+                    *)       badge_class="fail" ;;
+                esac
                 name_html=$(printf '%s' "$name" | sanitize)
                 artifact_html=$(printf '%s' "$artifact" | sanitize)
                 # Commit cell: short hash, optionally linked to GitHub.
