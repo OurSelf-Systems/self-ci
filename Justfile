@@ -948,10 +948,20 @@ _vm64-compile-ubuntu-amd64 port:
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
     @just _banner "Finished vm64 on Ubuntu AMD64"
 
+# FreeBSD recipes use gcc14 (installed via cloud-init) instead of the system
+# clang. Stock LLVM clang on aarch64 generates a bytecode interpreter whose
+# recursive cycle (interpret_method -> interpret -> try_pic_entry -> send ->
+# ... -> interpret_method) consumes ~10× the C++ stack of gcc/Apple-Clang for
+# the same Self code, blowing the 5 MB SelfStackLimit during world boot.
+# amd64 is included too — same toolchain, same risk, and gcc14 builds cleanly.
+# Linker rpath needed because gcc14's libstdc++ depends on gcc14's libgcc_s,
+# not the older system one.
+FREEBSD_GCC_CMAKE := '-DCMAKE_C_COMPILER=/usr/local/bin/gcc14 -DCMAKE_CXX_COMPILER=/usr/local/bin/g++14 -DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath=/usr/local/lib/gcc14'
+
 _vm64-compile-freebsd-arm64 port:
-    @just _action "Compiling vm64 on FreeBSD ARM64"
+    @just _action "Compiling vm64 on FreeBSD ARM64 (gcc14)"
     @just _rsync {{port}}
-    @just do {{port}} 'cd /tmp/self-build && cmake -S vm64 -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF && rm -f build/incls/_precompiled.hh.gch && cmake --build build -j$(sysctl -n hw.ncpu)'
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm64 -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF {{FREEBSD_GCC_CMAKE}} && rm -f build/incls/_precompiled.hh.gch && cmake --build build -j$(sysctl -n hw.ncpu)'
     @just do {{port}} 'cd /tmp/self-build && build/Self --vm-run-tests'
     @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap64'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
     @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap64'
@@ -959,9 +969,9 @@ _vm64-compile-freebsd-arm64 port:
     @just _banner "Finished vm64 on FreeBSD ARM64"
 
 _vm64-compile-freebsd-amd64 port:
-    @just _action "Compiling vm64 on FreeBSD AMD64"
+    @just _action "Compiling vm64 on FreeBSD AMD64 (gcc14)"
     @just _rsync {{port}}
-    @just do {{port}} 'cd /tmp/self-build && cmake -S vm64 -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF && rm -f build/incls/_precompiled.hh.gch && cmake --build build -j$(sysctl -n hw.ncpu)'
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm64 -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF {{FREEBSD_GCC_CMAKE}} && rm -f build/incls/_precompiled.hh.gch && cmake --build build -j$(sysctl -n hw.ncpu)'
     @just do {{port}} 'cd /tmp/self-build && build/Self --vm-run-tests'
     @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap64'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
     @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap64'
@@ -1031,7 +1041,10 @@ _vm32-compile-netbsd-macppc port:
 _vm32-compile-netbsd-sparc64 port:
     @just _action "Compiling vm32 (sparc -m32) on NetBSD sparc64"
     @just _rsync {{port}}
-    @just do {{port}} 'cd /tmp/self-build && cmake -S vm -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_EXE_LINKER_FLAGS="-m32 -Wl,-rpath,/usr/X11R7/lib/sparc:/usr/lib/sparc" -DCMAKE_LIBRARY_PATH="/usr/lib/sparc;/usr/X11R7/lib/sparc" -DCMAKE_INCLUDE_PATH="/usr/X11R7/include" && cmake --build build -j$(sysctl -n hw.ncpu)'
+    # /usr/lib/sparc/libphkmalloc.a is added to the link line (installed by
+    # provision-netbsd-sparc64) to override libc's TLS-using malloc — Self's
+    # SPARC JIT clobbers %g7. See upstream issue russellallen/self#149.
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_EXE_LINKER_FLAGS="-m32 -Wl,-rpath,/usr/X11R7/lib/sparc:/usr/lib/sparc /usr/lib/sparc/libphkmalloc.a" -DCMAKE_LIBRARY_PATH="/usr/lib/sparc;/usr/X11R7/lib/sparc" -DCMAKE_INCLUDE_PATH="/usr/X11R7/include" && cmake --build build -j$(sysctl -n hw.ncpu)'
     @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
     @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap'
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap --runAutomaticTests --headless'
@@ -1192,10 +1205,13 @@ provision-freebsd-arm64:
         -nic user,hostfwd=tcp::${PORT}-:22 \
         -pidfile freebsd-arm64-provision.pid \
         -display none -daemonize
+    # Always shut the VM down, even if provisioning fails — leaving the
+    # qemu process around locks the pidfile and blocks the next attempt.
+    cleanup() { just _stop-vm freebsd-arm64-provision.pid "$PORT" 2>/dev/null || true; }
+    trap cleanup EXIT
     just _action "Waiting for nuageinit to finish (sshd will come up when done)"
     just _wait-for-ssh "$PORT"
     just _action "Provisioning complete — shutting down VM via SSH"
-    just _stop-vm freebsd-arm64-provision.pid "$PORT"
     just _banner "FreeBSD ARM64 image ready"
 
 # Download and provision FreeBSD AMD64 (vm64; TCG-emulated)
@@ -1229,10 +1245,49 @@ provision-freebsd-amd64:
         -nic user,hostfwd=tcp::${PORT}-:22 \
         -pidfile freebsd-amd64-provision.pid \
         -display none -daemonize
+    # Always shut the VM down, even if provisioning fails — leaving the
+    # qemu process around locks the pidfile and blocks the next attempt.
+    cleanup() { just _stop-vm freebsd-amd64-provision.pid "$PORT" 2>/dev/null || true; }
+    trap cleanup EXIT
     just _action "Waiting for nuageinit to finish (sshd will come up when done)"
-    just _wait-for-ssh "$PORT"
+    # TCG-emulated x86_64 + cloud-init + gcc14 install is slow — give it ~30 min.
+    just _wait-for-ssh "$PORT" 900
+    # sshd may come up before nuageinit's runcmd finishes installing packages.
+    # The cloud-init writes /var/run/self-ci-provisioned only on successful
+    # `pkg install`, so poll for it (up to ~10 min).
+    just _action "Verifying cloud-init package install succeeded"
+    # nuageinit installs the requested packages one at a time. Each is a pkg
+    # bootstrap → fetch → install cycle, and TCG-emulated x86 is slow, so the
+    # full sequence often takes 15-20+ minutes after sshd comes up. Poll up to
+    # ~30 minutes; report progress every ~30 s so it doesn't look hung.
+    PKGS="cmake rsync bash xxd pkgconf sudo libX11 libXext ncurses fusefs-sshfs gcc14"
+    TOTAL=$(echo "$PKGS" | wc -w | tr -d ' ')
+    FOUND_MARKER=no
+    for i in $(seq 1 600); do
+        if sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -p "$PORT" ci@localhost \
+            'test -f /var/run/self-ci-provisioned' 2>/dev/null; then
+            FOUND_MARKER=yes
+            break
+        fi
+        if [ $(( i % 10 )) -eq 0 ]; then
+            INSTALLED=$(sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                -o LogLevel=ERROR -p "$PORT" ci@localhost \
+                "n=0; for p in $PKGS; do pkg info -e \$p 2>/dev/null && n=\$((n+1)); done; echo \$n" 2>/dev/null || echo "?")
+            printf '  [%3ds] %s/%s packages installed\n' $(( i * 3 )) "$INSTALLED" "$TOTAL"
+        fi
+        sleep 3
+    done
+    if [ "$FOUND_MARKER" != yes ]; then
+        echo "ERROR: cloud-init pkg install did not complete (no /var/run/self-ci-provisioned marker)."
+        echo "       --- /var/log/nuageinit.log ---"
+        sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -p "$PORT" ci@localhost \
+            'sudo cat /var/log/nuageinit.log' 2>&1 || true
+        echo "       --- end of log ---"
+        exit 1
+    fi
     just _action "Provisioning complete — shutting down VM via SSH"
-    just _stop-vm freebsd-amd64-provision.pid "$PORT"
     just _banner "FreeBSD AMD64 image ready"
 
 # Download and provision NetBSD i386 (vm 32-bit, via Anita run through uvx)
@@ -1598,6 +1653,21 @@ provision-netbsd-sparc64:
     sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR -p "$PORT" ci@localhost \
         'set -e; cd /tmp && ftp -4 -V -o xbase-sparc.tgz http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/sparc/binary/sets/xbase.tgz && ftp -4 -V -o xcomp-sparc.tgz http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/sparc/binary/sets/xcomp.tgz && sudo rm -rf /tmp/sparc-xbase /tmp/sparc-xcomp && sudo mkdir -p /tmp/sparc-xbase /tmp/sparc-xcomp /usr/X11R7/lib/sparc && sudo tar -xzf /tmp/xbase-sparc.tgz -C /tmp/sparc-xbase && sudo tar -xzf /tmp/xcomp-sparc.tgz -C /tmp/sparc-xcomp && sudo sh -c "cd /tmp/sparc-xbase/usr/X11R7/lib && cp -P lib*.so* /usr/X11R7/lib/sparc/" && sudo sh -c "cd /tmp/sparc-xcomp/usr/X11R7/lib && cp lib*.a /usr/X11R7/lib/sparc/" && SPARC=/usr/X11R7/lib/sparc && LIBS="X11 Xext Xft Xrender fontconfig freetype ICE SM Xt Xmu Xcursor Xfixes Xi Xrandr Xinerama Xpm Xtst" && ALL_A="" && for lib in $LIBS; do [ -f "$SPARC/lib$lib.a" ] && ALL_A="$ALL_A $SPARC/lib$lib.a"; done && COMMON="$SPARC/libxcb.a $SPARC/libXau.a $SPARC/libXdmcp.a -lexpat -lz" && for lib in $LIBS; do if [ -f "$SPARC/lib$lib.a" ]; then sudo rm -f "$SPARC/lib$lib.so" && echo "GROUP ( $ALL_A $COMMON )" | sudo tee "$SPARC/lib$lib.so" > /dev/null; fi; done && sudo rm -rf /tmp/sparc-xbase /tmp/sparc-xcomp /tmp/xbase-sparc.tgz /tmp/xcomp-sparc.tgz'
+    #
+    # Build a 32-bit phkmalloc to replace libc's jemalloc. Self's SPARC JIT
+    # clobbers %g7, which the ELF ABI reserves for TLS — jemalloc reads TLS
+    # and crashes. phkmalloc (resurrected from NetBSD's old libc) is TLS-free.
+    # See https://github.com/russellallen/self/issues/149. Pinned revision so
+    # the image stays reproducible. sbrk.c is intentionally omitted: it's a
+    # Linux-only shim that would collide with NetBSD libc's sbrk(2). Empty
+    # extern.h / reentrant.h stubs satisfy malloc.c's NetBSD #include block —
+    # those are libc-private headers, not in /usr/include, and their content
+    # is only referenced under _LIBC / _REENTRANT, neither of which we set.
+    #
+    just _action "Building 32-bit phkmalloc (per upstream issue #149)"
+    sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p "$PORT" ci@localhost \
+        'set -e; cd /tmp && rm -rf phkmalloc-build && mkdir phkmalloc-build && ftp -4 -V -o phkmalloc.tar.gz https://hg.sr.ht/~nbuwe/phkmalloc/archive/2ba4f8a0641ac4e232c252de4ee58879c506878c.tar.gz && tar -xzf phkmalloc.tar.gz -C phkmalloc-build --strip-components=1 && cd phkmalloc-build && : > extern.h && : > reentrant.h && cc -m32 -O2 -fno-strict-aliasing -I. -c malloc.c aligned_alloc.c memalign.c valloc.c && ar cr libphkmalloc.a malloc.o aligned_alloc.o memalign.o valloc.o && sudo cp libphkmalloc.a /usr/lib/sparc/libphkmalloc.a && cd /tmp && rm -rf phkmalloc-build phkmalloc.tar.gz'
     just _action "Shutting down VM"
     just _stop-vm netbsd-sparc64-provision.pid "$PORT"
     just _banner "NetBSD sparc64 image ready"
@@ -1980,10 +2050,27 @@ stop-netbsd-sparc64:
     just _stop-vm netbsd-sparc64.pid "$port"
     rm -f netbsd-sparc64.port
 
-# Execute command on a running VM via SSH
+# Execute command on a running VM via SSH.
+# `target` may be either a numeric port, a platform short name
+# (e.g. freebsd-arm64), or a full recipe name (e.g. vm64-freebsd-arm64).
+# Platform names are resolved to <name>.port in the project directory.
 [group('Advanced')]
-do port *ARGS:
+do target *ARGS:
     #!/usr/bin/env bash
+    set -euo pipefail
+    target="{{target}}"
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        port="$target"
+    else
+        name="${target#vm64-}"
+        name="${name#vm32-}"
+        portfile="{{justfile_directory()}}/${name}.port"
+        if [ ! -f "$portfile" ]; then
+            echo "ERROR: $portfile not found — is the '$name' VM running?" >&2
+            exit 1
+        fi
+        port=$(cat "$portfile")
+    fi
     cat <<'JUSTEOF'
     > {{ARGS}}
     JUSTEOF
@@ -1992,9 +2079,41 @@ do port *ARGS:
     JUSTEOF
     )
     CMD="echo $hex_string | xxd -r -p > /tmp/qemu_cmd ; bash --login /tmp/qemu_cmd"
-    sshpass -p ci ssh ci@localhost -p {{port}} \
+    sshpass -p ci ssh ci@localhost -p "$port" \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR "($CMD) 2>&1"
+
+# Copy files to/from a running VM via SCP.
+# `target` may be a numeric port, platform short name (e.g. freebsd-arm64),
+# or full recipe name (e.g. vm64-freebsd-arm64).
+# Paths prefixed with `:` are interpreted as remote (ci@localhost) paths.
+# Examples:
+#   just scp vm64-freebsd-arm64 ./local.txt :/tmp/remote.txt
+#   just scp vm64-freebsd-arm64 :/tmp/remote.txt ./local.txt
+[group('Advanced')]
+scp target src dst:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="{{target}}"
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        port="$target"
+    else
+        name="${target#vm64-}"
+        name="${name#vm32-}"
+        portfile="{{justfile_directory()}}/${name}.port"
+        if [ ! -f "$portfile" ]; then
+            echo "ERROR: $portfile not found — is the '$name' VM running?" >&2
+            exit 1
+        fi
+        port=$(cat "$portfile")
+    fi
+    src="{{src}}"
+    dst="{{dst}}"
+    [[ "$src" == :* ]] && src="ci@localhost:${src#:}"
+    [[ "$dst" == :* ]] && dst="ci@localhost:${dst#:}"
+    sshpass -p ci scp -P "$port" \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR "$src" "$dst"
 
 # Attach an interactive terminal to a running VM via SSH
 [group('Advanced')]
@@ -2022,7 +2141,6 @@ mount port host_dir guest_dir='/mnt/host':
         mount.key ci@localhost:/tmp/mount.key
     just do {{port}} "chmod 600 /tmp/mount.key"
     SSHFS_OPTS="allow_other,IdentityFile=/tmp/mount.key,StrictHostKeyChecking=accept-new,UserKnownHostsFile=/dev/null,reconnect,port=${SSHD_PORT}"
-    PSSHFS_ARGS="ssh_args=-p ${SSHD_PORT} -i /tmp/mount.key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
     REMOTE="${HOST_USER}@10.0.2.2:${HOST_DIR}"
     SCRIPT=$(cat <<EOF
     set -e
@@ -2036,7 +2154,7 @@ mount port host_dir guest_dir='/mnt/host':
         kldstat -q -m fusefs || { echo "ERROR: fusefs module not loaded; re-provision the VM so /boot/loader.conf has fusefs_load=YES" >&2; exit 1; }
         sudo sshfs -o ${SSHFS_OPTS} ${REMOTE} {{guest_dir}}
     elif [ "\$OS" = NetBSD ]; then
-        sudo mount_psshfs -o "${PSSHFS_ARGS}" ${REMOTE} {{guest_dir}}
+        sudo mount_psshfs -O Port=${SSHD_PORT} -O IdentityFile=/tmp/mount.key -O StrictHostKeyChecking=accept-new -O UserKnownHostsFile=/dev/null ${REMOTE} {{guest_dir}}
     else
         echo "unsupported guest OS: \$OS" >&2
         exit 1
@@ -2158,16 +2276,20 @@ _rsync port:
         --exclude='*.o' --exclude='*.snap' --exclude='*.snap64' \
         "{{SRCDIR}}/" ci@localhost:/tmp/self-build/
 
-_wait-for-ssh port:
+# Optional `iterations` arg controls the wait budget (each iteration ≈ 2 s).
+# 180 iterations ≈ 360 s is enough for booting a pre-provisioned image, but
+# first-time cloud-init on TCG-emulated FreeBSD amd64 routinely takes longer —
+# pass a larger value from those provisioning recipes.
+_wait-for-ssh port iterations='180':
     #!/usr/bin/env bash
-    for i in $(seq 1 180); do
+    for i in $(seq 1 {{iterations}}); do
         if sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=5 -o LogLevel=ERROR -p {{port}} ci@localhost "echo ready" 2>/dev/null; then
             exit 0
         fi
         sleep 2
     done
-    echo "ERROR: SSH not available on port {{port}} after 360 seconds"
+    echo "ERROR: SSH not available on port {{port}} after $(( {{iterations}} * 2 )) seconds"
     exit 1
 
 _stop-vm pidfile port:
@@ -2461,6 +2583,10 @@ _create-cloud-init-freebsd-amd64:
       - libXext
       - ncurses
       - fusefs-sshfs
+      # gcc14: stock LLVM clang on FreeBSD 15 (clang 19) generates a Self vm64
+      # interpreter whose recursion blows the Self process stack during world
+      # boot. gcc14 fits the same code in the default 5 MB SelfStackLimit.
+      - gcc14
 
     runcmd:
       - ssh-keygen -A
@@ -2468,6 +2594,12 @@ _create-cloud-init-freebsd-amd64:
       - sysrc sshd_enable=YES
       - sysrc -f /boot/loader.conf fusefs_load=YES
       - service sshd start
+      # Verify every requested package actually got installed. nuageinit's
+      # `packages:` handler has been observed to silently drop items under
+      # TCG-emulated load (lost pkgconf and libXext on amd64). The marker is
+      # only touched when every package is present; the provisioning recipe
+      # polls for /var/run/self-ci-provisioned and aborts if it's missing.
+      - for p in cmake rsync bash xxd pkgconf sudo libX11 libXext ncurses fusefs-sshfs gcc14; do pkg info -e $p || exit 0; done; touch /var/run/self-ci-provisioned
     EOF
     if command -v mkisofs &>/dev/null; then
         mkisofs -output "$iso" -volid cidata -joliet -rock "$tmpdir/user-data" "$tmpdir/meta-data"
@@ -2520,6 +2652,10 @@ _create-cloud-init-freebsd-arm64:
       - libXext
       - ncurses
       - fusefs-sshfs
+      # Stock LLVM clang (FreeBSD 15 ships clang 19) generates an interpreter
+      # for vm64 whose recursion blows the Self process stack during world
+      # boot. gcc14 fits the same code in the default 5 MB SelfStackLimit.
+      - gcc14
 
     runcmd:
       - ssh-keygen -A
