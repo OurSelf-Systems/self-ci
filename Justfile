@@ -13,6 +13,10 @@
 # Requirements: qemu, sshpass, rsync, cmake, expect (for FreeBSD provisioning)
 
 export SELFSRC := env('SELFSRC', '')
+
+# Never let ssh/scp fall back to an X11 askpass helper (XQuartz sets DISPLAY;
+# the fallback bypasses sshpass and fails auth with "Permission denied").
+export SSH_ASKPASS_REQUIRE := 'never'
 SRCDIR := if SELFSRC == '' { '' } else { justfile_directory() + '/src/' + SELFSRC }
 BUILD_MACOS := justfile_directory() + '/build/macos-native'
 NCPU := `sysctl -n hw.ncpu 2>/dev/null || echo 4`
@@ -29,6 +33,8 @@ FREEBSD_ARM64_QCOW := 'images/freebsd-arm64.qcow2'
 FREEBSD_AMD64_QCOW := 'images/freebsd-amd64.qcow2'
 NETBSD_AMD64_QCOW  := 'images/netbsd-amd64.qcow2'
 NETBSD_ARM64_QCOW  := 'images/netbsd-arm64.qcow2'
+ALPINE_AMD64_QCOW  := 'images/alpine-amd64.qcow2'
+ALPINE_ARM64_QCOW  := 'images/alpine-arm64.qcow2'
 
 # vm platforms (32-bit, usually 64 bit host with multilib support)
 UBUNTU_MULTILIB_QCOW  := 'images/ubuntu-amd64-multilib.qcow2'
@@ -36,6 +42,7 @@ FREEBSD_LIB32_QCOW := 'images/freebsd-amd64-lib32.qcow2'
 NETBSD_I386_QCOW   := 'images/netbsd-i386.qcow2'
 NETBSD_MACPPC_QCOW  := 'images/netbsd-macppc.qcow2'
 NETBSD_SPARC64_QCOW := 'images/netbsd-sparc64.qcow2'
+ALPINE_X86_QCOW     := 'images/alpine-x86.qcow2'
 
 # ─── Download URLs ────────────────────────────────────────
 
@@ -48,6 +55,15 @@ NETBSD_AMD64_URL   := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/amd64/'
 NETBSD_ARM64_URL   := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/evbarm-aarch64/'
 NETBSD_MACPPC_URL   := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/macppc/'
 NETBSD_SPARC64_URL  := 'http://ftp.netbsd.org/pub/NetBSD/NetBSD-10.1/images/NetBSD-10.1-sparc64.iso'
+# Alpine ships no 32-bit cloud images (cloud/ is x86_64+aarch64 only), so x86
+# is installed from the virt ISO by an expect script — see provision-alpine-x86.
+ALPINE_X86_ISO_URL       := 'https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86/alpine-virt-3.24.1-x86.iso'
+ALPINE_X86_COMMUNITY_URL := 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community'
+# 64-bit Alpine does have cloud images: the generic_* cloudinit qcow2s ship
+# cloud-init with the default datasource list, so the NoCloud seed-ISO
+# approach used for Ubuntu works as-is (see provision-alpine-amd64/-arm64).
+ALPINE_AMD64_URL   := 'https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-x86_64-bios-cloudinit-r0.qcow2'
+ALPINE_ARM64_URL   := 'https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-aarch64-uefi-cloudinit-r0.qcow2'
 
 # ─── Default ──────────────────────────────────────────────
 
@@ -80,6 +96,27 @@ help:
     echo ""
     echo "$(tput bold)Recipes:$(tput sgr0)"
     just --list --list-heading ''
+
+# Show the latest build report (artifacts/index.html) in the terminal
+[group('Environment')]
+status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _generate-report >/dev/null
+    report="{{justfile_directory()}}/artifacts/index.html"
+    cols=$(tput cols 2>/dev/null || echo 120)
+    if command -v links >/dev/null 2>&1; then
+        links -dump -width "$cols" "$report"
+    elif command -v lynx >/dev/null 2>&1; then
+        lynx -dump -nolist -width "$cols" "$report"
+    elif command -v w3m >/dev/null 2>&1; then
+        w3m -dump -cols "$cols" "$report"
+    else
+        echo "No text browser found to render the report."
+        echo "Install one (brew install links) or open it directly:"
+        echo "  open $report"
+        exit 1
+    fi
 
 _check-src:
     #!/usr/bin/env bash
@@ -155,6 +192,7 @@ fullrun-vm64:
     just vm64-freebsd-arm64 && RESULTS+=("vm64-freebsd-arm64: PASS") || { RESULTS+=("vm64-freebsd-arm64: FAIL"); FAILS=$((FAILS + 1)); }
     just vm64-freebsd-amd64 && RESULTS+=("vm64-freebsd-amd64: PASS") || { RESULTS+=("vm64-freebsd-amd64: FAIL"); FAILS=$((FAILS + 1)); }
     just vm64-netbsd-amd64 && RESULTS+=("vm64-netbsd-amd64: PASS") || { RESULTS+=("vm64-netbsd-amd64: FAIL"); FAILS=$((FAILS + 1)); }
+    just vm64-alpine-arm64 && RESULTS+=("vm64-alpine-arm64: PASS") || { RESULTS+=("vm64-alpine-arm64: FAIL"); FAILS=$((FAILS + 1)); }
 
     ELAPSED=$((SECONDS - START))
     echo ""
@@ -615,6 +653,122 @@ vm64-netbsd-arm64:
     fi
     exit $result
 
+# Build and test vm64 on Alpine AMD64 (musl, TCG-emulated)
+[group('vm64')]
+vm64-alpine-amd64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NAME=vm64-alpine-amd64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
+    finalize() {
+        local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
+        [ $VM_UP -eq 1 ] && just stop-alpine-amd64 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
+    just _check-src
+    just start-alpine-amd64 2>&1 | tee -a "$LOG"
+    VM_UP=1
+    PORT=$(cat alpine-amd64.port)
+    set +o pipefail
+    just _vm64-compile-alpine-amd64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
+    if [ $result -eq 0 ]; then
+        mkdir -p artifacts
+        sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -P "$PORT" \
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
+    fi
+    exit $result
+
+# Build and test vm64 on Alpine ARM64 (musl, hvf-accelerated)
+[group('vm64')]
+vm64-alpine-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NAME=vm64-alpine-arm64
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
+    finalize() {
+        local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
+        [ $VM_UP -eq 1 ] && just stop-alpine-arm64 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
+    just _check-src
+    just start-alpine-arm64 2>&1 | tee -a "$LOG"
+    VM_UP=1
+    PORT=$(cat alpine-arm64.port)
+    set +o pipefail
+    just _vm64-compile-alpine-arm64 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
+    if [ $result -eq 0 ]; then
+        mkdir -p artifacts
+        sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -P "$PORT" \
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
+    fi
+    exit $result
+
 # ═══════════════════════════════════════════════════════════
 #  vm32 Build + Test
 # ═══════════════════════════════════════════════════════════
@@ -910,6 +1064,64 @@ vm32-netbsd-sparc64:
     fi
     exit $result
 
+# Build and test vm32 on Alpine x86 (native 32-bit, musl)
+[group('vm32')]
+vm32-alpine-x86:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NAME=vm32-alpine-x86
+    mkdir -p "{{justfile_directory()}}/artifacts/logs"
+    LOG="{{justfile_directory()}}/artifacts/logs/$NAME.log"
+    : > "$LOG"
+    START=$SECONDS
+    VM_UP=0
+    TIMEOUT_MARK="{{justfile_directory()}}/artifacts/logs/$NAME.timeout"
+    rm -f "$TIMEOUT_MARK"
+    ( sleep {{RUN_TIMEOUT_SECS}}
+      touch "$TIMEOUT_MARK"
+      pkill -TERM -P $$ 2>/dev/null || true
+      sleep 10
+      pkill -KILL -P $$ 2>/dev/null || true
+    ) &
+    WATCHDOG=$!
+    finalize() {
+        local code=$?
+        kill $WATCHDOG 2>/dev/null || true
+        wait $WATCHDOG 2>/dev/null || true
+        [ $VM_UP -eq 1 ] && just stop-alpine-x86 2>/dev/null || true
+        local elapsed=$((SECONDS - START))
+        local label=FAIL
+        if [ -f "$TIMEOUT_MARK" ]; then
+            label=TIMEOUT
+            rm -f "$TIMEOUT_MARK"
+            echo "[$NAME] aborted after {{RUN_TIMEOUT_SECS}}s timeout" | tee -a "$LOG"
+        fi
+        if [ $code -eq 0 ]; then
+            just _record-status "$NAME" PASS $elapsed "Self-$NAME"
+            just _pass "$NAME"
+        else
+            just _record-status "$NAME" "$label" $elapsed ""
+            just _fail "$NAME ($label)"
+        fi
+        just _generate-report
+    }
+    trap finalize EXIT
+    just _check-src
+    just start-alpine-x86 2>&1 | tee -a "$LOG"
+    VM_UP=1
+    PORT=$(cat alpine-x86.port)
+    set +o pipefail
+    just _vm32-compile-alpine-x86 "$PORT" 2>&1 | tee -a "$LOG"
+    result=${PIPESTATUS[0]}
+    set -o pipefail
+    if [ $result -eq 0 ]; then
+        mkdir -p artifacts
+        sshpass -p ci scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -P "$PORT" \
+            ci@localhost:/tmp/self-build/build/Self "artifacts/Self-$NAME" || result=$?
+    fi
+    exit $result
+
 # ═══════════════════════════════════════════════════════════
 #  vm64 Compile (internal)
 # ═══════════════════════════════════════════════════════════
@@ -998,6 +1210,30 @@ _vm64-compile-netbsd-arm64 port:
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
     @just _banner "Finished vm64 on NetBSD ARM64"
 
+# The Alpine vm64 builds are the musl-libc counterparts of the Ubuntu ones.
+# Unlike vm32 on Alpine x86 there is no phkmalloc interposer: 64-bit oop
+# tagging places no address-range constraint on the C heap (macOS and the
+# BSDs already run vm64 with high malloc addresses).
+_vm64-compile-alpine-amd64 port:
+    @just _action "Compiling vm64 on Alpine AMD64"
+    @just _rsync {{port}}
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm64 -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF && rm -f build/incls/_precompiled.hh.gch && cmake --build build -j$(nproc)'
+    @just do {{port}} 'cd /tmp/self-build && build/Self --vm-run-tests'
+    @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap64'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
+    @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap64'
+    @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
+    @just _banner "Finished vm64 on Alpine AMD64"
+
+_vm64-compile-alpine-arm64 port:
+    @just _action "Compiling vm64 on Alpine ARM64"
+    @just _rsync {{port}}
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm64 -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF && rm -f build/incls/_precompiled.hh.gch && cmake --build build -j$(nproc)'
+    @just do {{port}} 'cd /tmp/self-build && build/Self --vm-run-tests'
+    @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap64'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
+    @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap64'
+    @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap64 --runAutomaticTests --headless'
+    @just _banner "Finished vm64 on Alpine ARM64"
+
 # ═══════════════════════════════════════════════════════════
 #  vm32 Compile (internal)
 # ═══════════════════════════════════════════════════════════
@@ -1050,13 +1286,27 @@ _vm32-compile-netbsd-sparc64 port:
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap --runAutomaticTests --headless'
     @just _banner "Finished vm32 on NetBSD sparc64"
 
+# Alpine x86 is natively 32-bit (no multilib/PKG_CONFIG_LIBDIR gymnastics
+# needed) and the first musl-libc platform in this CI. phkmalloc (built at
+# provision time) is linked --whole-archive so its malloc/free interpose over
+# musl's for the whole process, keeping C-heap pointers below the oop-tag
+# bit — the musl equivalent of the glibc mallopt/__morecore trick.
+_vm32-compile-alpine-x86 port:
+    @just _action "Compiling vm32 on Alpine x86"
+    @just _rsync {{port}}
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF -DCMAKE_EXE_LINKER_FLAGS="-Wl,--whole-archive /usr/lib/libphkmalloc.a -Wl,--no-whole-archive" && cmake --build build -j$(nproc)'
+    @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
+    @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap'
+    @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap --runAutomaticTests --headless'
+    @just _banner "Finished vm32 on Alpine x86"
+
 # ═══════════════════════════════════════════════════════════
 #  Provision — Download and provision VM images
 # ═══════════════════════════════════════════════════════════
 
 # Download and provision all VM images
 [group('Provision')]
-provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib provision-freebsd-amd64-lib32 provision-freebsd-arm64 provision-freebsd-amd64 provision-netbsd-i386 provision-netbsd-amd64 provision-netbsd-macppc provision-netbsd-sparc64
+provision-all: provision-ubuntu-arm64 provision-ubuntu-amd64 provision-ubuntu-amd64-multilib provision-freebsd-amd64-lib32 provision-freebsd-arm64 provision-freebsd-amd64 provision-netbsd-i386 provision-netbsd-amd64 provision-netbsd-macppc provision-netbsd-sparc64 provision-alpine-x86 provision-alpine-amd64 provision-alpine-arm64
     @just _banner "All images ready"
 
 # Download and provision Ubuntu ARM64
@@ -1672,6 +1922,254 @@ provision-netbsd-sparc64:
     just _stop-vm netbsd-sparc64-provision.pid "$PORT"
     just _banner "NetBSD sparc64 image ready"
 
+# Download and provision Alpine x86 (32-bit, musl, for vm32)
+#
+# Alpine publishes no 32-bit cloud images, so this drives an unattended
+# setup-alpine install from the virt ISO over the QEMU serial console with
+# expect. Two phases, mirroring the NetBSD recipes:
+#
+#   Phase A: boot the ISO with a blank disk, run `setup-alpine -e -f answers`
+#     (-e = empty root password, so no interactive prompts; USEROPTS=none and
+#     ERASE_DISKS are honored non-interactively — verified against
+#     alpine-conf's setup-alpine.in/setup-user.in/setup-disk.in). Then chroot
+#     into the installed disk to create the ci user, install bash+sudo, and
+#     allow ssh password auth. Result: alpine-x86-install.qcow2.
+#   Phase B: boot that image, ssh in as ci, apk add the build deps.
+#
+# Each phase's output file only appears on success, so a re-run resumes at
+# the first incomplete phase; the final qcow2 lands atomically at the end.
+# Delete images/alpine-x86*.qcow2 to force a full re-provision.
+[group('Provision')]
+provision-alpine-x86:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p images
+    if [ -f "{{ALPINE_X86_QCOW}}" ]; then
+        just _action "Image already exists: {{ALPINE_X86_QCOW}} (delete to force re-provision)"
+        just _banner "Alpine x86 image ready"
+        exit 0
+    fi
+    iso="images/alpine-virt-x86.iso"
+    install_img="images/alpine-x86-install.qcow2"
+    if [ ! -f "$iso" ]; then
+        just _action "Downloading Alpine x86 virt ISO"
+        curl -L -o "$iso" "{{ALPINE_X86_ISO_URL}}"
+    else
+        echo "Cached download already exists: $iso"
+    fi
+    if [ -f "$install_img" ]; then
+        just _action "Phase A already complete ($install_img exists) — skipping to Phase B"
+    else
+        just _action "Phase A: unattended setup-alpine install via serial console (TCG, ~10-20 min)"
+        rm -f "$install_img.tmp"
+        qemu-img create -f qcow2 "$install_img.tmp" 8G
+        ALPINE_ISO="$iso" ALPINE_DISK="$install_img.tmp" \
+        ALPINE_COMMUNITY_URL="{{ALPINE_X86_COMMUNITY_URL}}" \
+        expect <<'INSTALL_EXPECT'
+        set timeout 420
+        log_user 1
+        set send_slow {10 .01}
+
+        proc die {msg} { puts "\nPROVISION-FAIL: $msg"; exit 1 }
+        proc sends {line} { global send_slow; send -s -- "$line\r" }
+        # Run a command and require its success marker. The marker is split in
+        # the typed command (CI_"OK_n") so the serial echo of the command
+        # itself can never match the expect pattern — only real output can.
+        # On eof, report how qemu ended (exit code vs signal) before dying.
+        proc die_eof {msg} {
+            catch { puts "\nspawn wait status: [wait]" }
+            die $msg
+        }
+        proc run_ok {cmd n} {
+            sends "$cmd && echo CI_\"OK_$n\""
+            expect {
+                "CI_OK_$n" { }
+                timeout { die "command failed or timed out: $cmd" }
+                eof     { die_eof "qemu exited during: $cmd" }
+            }
+        }
+
+        spawn qemu-system-x86_64 \
+            -machine q35 -cpu max \
+            -m 2G -smp 2 \
+            -drive file=$env(ALPINE_DISK),if=virtio \
+            -cdrom $env(ALPINE_ISO) \
+            -boot d \
+            -nic user \
+            -nographic
+
+        # The live ISO logs root straight in with no password.
+        expect {
+            "login:" { send "root\r" }
+            timeout  { die "no login prompt from live ISO" }
+            eof      { die "qemu exited before login prompt" }
+        }
+        expect {
+            -re {~# } { }
+            timeout   { die "no root shell on live ISO" }
+            eof       { die "qemu exited before root shell" }
+        }
+
+        sends "cat > /tmp/answers <<'CI_ANSWERS'"
+        sends "KEYMAPOPTS=none"
+        sends "HOSTNAMEOPTS=alpine-ci"
+        sends "DEVDOPTS=mdev"
+        sends "INTERFACESOPTS=\"auto lo"
+        sends "iface lo inet loopback"
+        sends ""
+        sends "auto eth0"
+        sends "iface eth0 inet dhcp"
+        sends "\""
+        sends "DNSOPTS=\"\""
+        sends "TIMEZONEOPTS=UTC"
+        sends "PROXYOPTS=none"
+        sends "APKREPOSOPTS=-1"
+        sends "USEROPTS=none"
+        sends "SSHDOPTS=openssh"
+        sends "NTPOPTS=busybox"
+        sends "DISKOPTS=\"-m sys /dev/vda\""
+        sends "LBUOPTS=none"
+        sends "APKCACHEOPTS=none"
+        sends "ERASE_DISKS=/dev/vda"
+        sends "CI_ANSWERS"
+        expect {
+            -re {~# } { }
+            timeout   { die "no shell prompt after writing answerfile" }
+        }
+
+        # -e leaves the root password empty so nothing prompts; defensive
+        # branches below handle prompts anyway in case a future alpine-conf
+        # changes behavior. Long timeout: TCG + package download + disk write.
+        sends "setup-alpine -e -f /tmp/answers && echo CI_\"SETUP_DONE\""
+        set timeout 1500
+        expect {
+            -re {New [Pp]assword[^\r\n]*: ?}    { send "ci\r"; exp_continue }
+            -re {Retype [Pp]assword[^\r\n]*: ?} { send "ci\r"; exp_continue }
+            -re {\(y/n\)[^\r\n]*\[n\] $}        { send "y\r"; exp_continue }
+            "CI_SETUP_DONE" { }
+            timeout { die "setup-alpine did not complete" }
+            eof     { die_eof "qemu exited during setup-alpine" }
+        }
+
+        # Post-install: customize the installed disk for the CI contracts
+        # (ci/ci ssh login, passwordless sudo, bash for the `do` helper).
+        # BIOS sys-mode layout: vda1 /boot, vda2 swap, vda3 /.
+        set timeout 300
+        run_ok "mount /dev/vda3 /mnt" 1
+        run_ok "cp /etc/resolv.conf /mnt/etc/resolv.conf" 2
+        run_ok "echo $env(ALPINE_COMMUNITY_URL) >> /mnt/etc/apk/repositories" 3
+        run_ok "chroot /mnt apk update" 4
+        run_ok "chroot /mnt apk add bash sudo" 5
+        run_ok "chroot /mnt adduser -D -s /bin/sh ci" 6
+        run_ok "echo ci:ci | chroot /mnt chpasswd" 7
+        run_ok "mkdir -p /mnt/etc/sudoers.d" 8
+        run_ok "echo 'ci ALL=(ALL) NOPASSWD: ALL' > /mnt/etc/sudoers.d/ci" 9
+        run_ok "chmod 440 /mnt/etc/sudoers.d/ci" 10
+        run_ok "echo 'PasswordAuthentication yes' >> /mnt/etc/ssh/sshd_config" 11
+        run_ok "umount /mnt" 12
+
+        sends "poweroff"
+        set timeout 120
+        expect {
+            eof     { }
+            timeout { die "guest did not power off" }
+        }
+    INSTALL_EXPECT
+        mv "$install_img.tmp" "$install_img"
+    fi
+    #
+    # Phase B: boot the installed image (persistent writes), ssh in as ci,
+    # install build deps. Re-runnable: apk add is idempotent.
+    #
+    just _action "Phase B: booting installed image to add build packages"
+    PORT=$(just _free-port)
+    trap '[ -f alpine-x86-provision.pid ] && kill "$(cat alpine-x86-provision.pid)" 2>/dev/null; rm -f alpine-x86-provision.pid' EXIT
+    qemu-system-x86_64 \
+        -machine q35 -cpu max \
+        -m 2G -smp 2 \
+        -drive file="$install_img",if=virtio \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile alpine-x86-provision.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _action "Installing build packages via apk"
+    sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p "$PORT" ci@localhost \
+        'sudo apk update && sudo apk add build-base cmake libx11-dev libxext-dev ncurses-dev pkgconf linux-headers rsync sshfs'
+    #
+    # Build phkmalloc to replace musl's malloc at link time (same trick as the
+    # NetBSD sparc64 recipe, same pinned revision). Self stores C-heap
+    # pointers in oop-tagged slots, so malloc must stay below 0x80000000;
+    # musl's mallocng mmaps at ~0xb7xxxxxx and musl has no mallopt/__morecore
+    # to redirect it. Unlike the sparc64 build, sbrk.c IS included here: it
+    # calls __NR_brk directly (musl's own sbrk always fails for n>0), and the
+    # kernel brk heap sits just above BSS at ~0x08xxxxxx — bit 31 clear.
+    #
+    just _action "Building 32-bit phkmalloc (keeps malloc below the oop-tag bit)"
+    sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p "$PORT" ci@localhost \
+        'set -e; cd /tmp && rm -rf phkmalloc-build && mkdir phkmalloc-build && wget -q -O phkmalloc.tar.gz https://hg.sr.ht/~nbuwe/phkmalloc/archive/2ba4f8a0641ac4e232c252de4ee58879c506878c.tar.gz && tar -xzf phkmalloc.tar.gz -C phkmalloc-build --strip-components=1 && cd phkmalloc-build && : > extern.h && : > reentrant.h && gcc -O2 -fno-strict-aliasing -I. -c malloc.c sbrk.c aligned_alloc.c memalign.c valloc.c && ar cr libphkmalloc.a malloc.o sbrk.o aligned_alloc.o memalign.o valloc.o && sudo cp libphkmalloc.a /usr/lib/libphkmalloc.a && cd /tmp && rm -rf phkmalloc-build phkmalloc.tar.gz'
+    just _action "Shutting down VM"
+    just _stop-vm alpine-x86-provision.pid "$PORT"
+    mv "$install_img" "{{ALPINE_X86_QCOW}}"
+    just _banner "Alpine x86 image ready"
+
+# Download and provision Alpine AMD64 (vm64, musl)
+#
+# Unlike 32-bit x86, Alpine publishes 64-bit cloud images with cloud-init
+# baked in, so this is the same one-boot NoCloud seed-ISO flow as Ubuntu.
+[group('Provision')]
+provision-alpine-amd64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p images
+    if [ -f "{{ALPINE_AMD64_QCOW}}" ]; then
+        just _action "Image already exists: {{ALPINE_AMD64_QCOW}} (delete to force re-provision)"
+    else
+        just _action "Downloading Alpine AMD64 cloud image"
+        curl -L -o "{{ALPINE_AMD64_QCOW}}" "{{ALPINE_AMD64_URL}}"
+        qemu-img resize "{{ALPINE_AMD64_QCOW}}" 20G
+        just _create-cloud-init-alpine-amd64
+        just _action "Provisioning Alpine AMD64 via cloud-init (will shut down automatically when done)"
+        PORT=$(just _free-port)
+        qemu-system-x86_64 \
+            -machine q35 -cpu Nehalem \
+            -m 4G -smp 2 \
+            -device virtio-rng-pci \
+            -drive file={{ALPINE_AMD64_QCOW}},if=virtio \
+            -drive file=images/cloud-init-alpine-amd64.iso,if=virtio,media=cdrom \
+            -nic user,hostfwd=tcp::${PORT}-:22 \
+            -nographic
+    fi
+    just _banner "Alpine AMD64 image ready"
+
+# Download and provision Alpine ARM64 (vm64, musl; hvf-accelerated on Apple Silicon)
+[group('Provision')]
+provision-alpine-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p images
+    if [ -f "{{ALPINE_ARM64_QCOW}}" ]; then
+        just _action "Image already exists: {{ALPINE_ARM64_QCOW}} (delete to force re-provision)"
+    else
+        just _action "Downloading Alpine ARM64 cloud image"
+        curl -L -o "{{ALPINE_ARM64_QCOW}}" "{{ALPINE_ARM64_URL}}"
+        qemu-img resize "{{ALPINE_ARM64_QCOW}}" 20G
+        just _create-cloud-init-alpine-arm64
+        just _action "Provisioning Alpine ARM64 via cloud-init (will shut down automatically when done)"
+        PORT=$(just _free-port)
+        qemu-system-aarch64 \
+            -machine virt -accel hvf -cpu host \
+            -m 4G -smp 4 \
+            -device virtio-rng-pci \
+            -drive file={{ALPINE_ARM64_QCOW}},if=virtio \
+            -drive file=images/cloud-init-alpine-arm64.iso,if=virtio,media=cdrom \
+            -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+            -nic user,hostfwd=tcp::${PORT}-:22 \
+            -nographic
+    fi
+    just _banner "Alpine ARM64 image ready"
+
 # ═══════════════════════════════════════════════════════════
 #  Environment
 # ═══════════════════════════════════════════════════════════
@@ -2050,6 +2548,94 @@ stop-netbsd-sparc64:
     just _stop-vm netbsd-sparc64.pid "$port"
     rm -f netbsd-sparc64.port
 
+# Boot Alpine x86 VM (snapshot mode, TCG-emulated, for vm32)
+#
+# -cpu max, not qemu64: Alpine's x86 userland uses SSE4.1 unconditionally
+# (librhash's pinsrd SIGILLs cmake under qemu64, which stops at SSE3).
+[group('Advanced')]
+start-alpine-x86:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Starting Alpine x86 VM"
+    PORT=$(just _free-port)
+    echo "$PORT" > alpine-x86.port
+    qemu-system-x86_64 \
+        -machine q35 -cpu max \
+        -m 2G -smp 2 \
+        -drive file={{ALPINE_X86_QCOW}},if=virtio,snapshot=on \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile alpine-x86.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _banner "Alpine x86 VM running on port $PORT"
+
+# Shut down Alpine x86 VM
+[group('Advanced')]
+stop-alpine-x86:
+    #!/usr/bin/env bash
+    port=$(cat alpine-x86.port 2>/dev/null || echo "0")
+    just _stop-vm alpine-x86.pid "$port"
+    rm -f alpine-x86.port
+
+# Boot Alpine AMD64 VM (snapshot mode, TCG-emulated, for vm64)
+#
+# -cpu Nehalem, not qemu64: Alpine's userland uses SSE4.1 unconditionally
+# (see start-alpine-x86). Nehalem is a fixed model with SSE4.2 — unlike
+# -cpu max it doesn't drag in every TCG feature flag.
+[group('Advanced')]
+start-alpine-amd64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Starting Alpine AMD64 VM"
+    PORT=$(just _free-port)
+    echo "$PORT" > alpine-amd64.port
+    qemu-system-x86_64 \
+        -machine q35 -cpu Nehalem \
+        -m 4G -smp 2 \
+        -device virtio-rng-pci \
+        -drive file={{ALPINE_AMD64_QCOW}},if=virtio,snapshot=on \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile alpine-amd64.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _banner "Alpine AMD64 VM running on port $PORT"
+
+# Shut down Alpine AMD64 VM
+[group('Advanced')]
+stop-alpine-amd64:
+    #!/usr/bin/env bash
+    port=$(cat alpine-amd64.port 2>/dev/null || echo "0")
+    just _stop-vm alpine-amd64.pid "$port"
+    rm -f alpine-amd64.port
+
+# Boot Alpine ARM64 VM (snapshot mode)
+[group('Advanced')]
+start-alpine-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _action "Starting Alpine ARM64 VM"
+    PORT=$(just _free-port)
+    echo "$PORT" > alpine-arm64.port
+    qemu-system-aarch64 \
+        -machine virt -accel hvf -cpu host \
+        -m 4G -smp 4 \
+        -device virtio-rng-pci \
+        -drive file={{ALPINE_ARM64_QCOW}},if=virtio,snapshot=on \
+        -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+        -nic user,hostfwd=tcp::${PORT}-:22 \
+        -pidfile alpine-arm64.pid \
+        -display none -daemonize
+    just _wait-for-ssh "$PORT"
+    just _banner "Alpine ARM64 VM running on port $PORT"
+
+# Shut down Alpine ARM64 VM
+[group('Advanced')]
+stop-alpine-arm64:
+    #!/usr/bin/env bash
+    port=$(cat alpine-arm64.port 2>/dev/null || echo "0")
+    just _stop-vm alpine-arm64.pid "$port"
+    rm -f alpine-arm64.port
+
 # Execute command on a running VM via SSH.
 # `target` may be either a numeric port, a platform short name
 # (e.g. freebsd-arm64), or a full recipe name (e.g. vm64-freebsd-arm64).
@@ -2079,6 +2665,10 @@ do target *ARGS:
     JUSTEOF
     )
     CMD="echo $hex_string | xxd -r -p > /tmp/qemu_cmd ; bash --login /tmp/qemu_cmd"
+    # With DISPLAY set (e.g. XQuartz), a race can make ssh prompt via the
+    # (nonexistent) X11 askpass helper instead of the pty sshpass watches,
+    # failing auth with "Permission denied". Same guard as _rsync.
+    unset DISPLAY SSH_ASKPASS
     sshpass -p ci ssh ci@localhost -p "$port" \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR "($CMD) 2>&1"
@@ -2111,6 +2701,7 @@ scp target src dst:
     dst="{{dst}}"
     [[ "$src" == :* ]] && src="ci@localhost:${src#:}"
     [[ "$dst" == :* ]] && dst="ci@localhost:${dst#:}"
+    unset DISPLAY SSH_ASKPASS  # see `do` recipe
     sshpass -p ci scp -P "$port" \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR "$src" "$dst"
@@ -2461,6 +3052,160 @@ _create-cloud-init-amd64-multilib:
       - apt-get install -y libx11-dev:i386 libxext-dev:i386 libncurses-dev:i386
       - systemctl enable ssh
       - systemctl start ssh
+
+    power_state:
+      mode: poweroff
+      message: "Provisioning complete, shutting down"
+      condition: true
+    EOF
+    if command -v mkisofs &>/dev/null; then
+        mkisofs -output "$iso" -volid cidata -joliet -rock "$tmpdir/user-data" "$tmpdir/meta-data"
+    elif command -v hdiutil &>/dev/null; then
+        mkdir -p "$tmpdir/iso_root"
+        cp "$tmpdir/user-data" "$tmpdir/meta-data" "$tmpdir/iso_root/"
+        hdiutil makehybrid -iso -joliet -iso-volume-name cidata -o "$iso" "$tmpdir/iso_root/"
+        [ -f "${iso}.iso" ] && mv "${iso}.iso" "$iso"
+    else
+        echo "ERROR: Cannot create cloud-init ISO (no mkisofs or hdiutil)"
+        echo "Install cdrtools: brew install cdrtools"
+        exit 1
+    fi
+    echo "Created cloud-init ISO: $iso"
+
+# Alpine's cloud-init supports the same modules we use for Ubuntu (users,
+# ssh_pwauth, packages via apk, power_state via busybox poweroff). bash and
+# sudo are not in the base image, and both are CI contracts (`do` runs
+# `bash --login`; the ci user needs NOPASSWD sudo).
+#
+# Three Alpine-specific extras, all discovered the hard way:
+#  - datasource_list pin: without it, later seedless boots re-run the full
+#    datasource search and block sshd behind ~4 min of EC2 metadata retries.
+#  - sshd dropin: the image's sshd is the openssh-server-pam build with a
+#    broken PAM stack (/etc/pam.d/sshd includes base-auth, which doesn't
+#    exist), so kbd-interactive auth always fails; force plain password auth.
+#  - console reorder runcmd: the stock cmdline ends in console=tty0, sending
+#    all post-initramfs output to the (invisible) framebuffer; make the
+#    serial console last so openrc/getty are visible in CI serial logs.
+_create-cloud-init-alpine-amd64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    iso="images/cloud-init-alpine-amd64.iso"
+    [ -f "$iso" ] && exit 0
+    mkdir -p images
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+    cat > "$tmpdir/meta-data" <<'EOF'
+    instance-id: ci-vm-alpine-amd64
+    local-hostname: ci-vm-alpine-amd64
+    EOF
+    cat > "$tmpdir/user-data" <<'EOF'
+    #cloud-config
+    users:
+      - name: ci
+        plain_text_passwd: ci
+        lock_passwd: false
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/bash
+        ssh_authorized_keys: []
+
+    ssh_pwauth: true
+
+    write_files:
+      - path: /etc/cloud/cloud.cfg.d/99-ci-datasource.cfg
+        content: |
+          datasource_list: [ NoCloud, None ]
+      - path: /etc/ssh/sshd_config.d/40-ci-passwordauth.conf
+        content: |
+          PasswordAuthentication yes
+          KbdInteractiveAuthentication no
+
+    package_update: true
+    packages:
+      - bash
+      - sudo
+      - build-base
+      - cmake
+      - libx11-dev
+      - libxext-dev
+      - ncurses-dev
+      - pkgconf
+      - linux-headers
+      - rsync
+      - sshfs
+
+    runcmd:
+      - sed -i 's/console=ttyS0,115200n8 console=ttyAMA0,115200n8 console=tty0/console=tty0 console=ttyAMA0,115200n8 console=ttyS0,115200n8/' /boot/extlinux.conf
+
+    power_state:
+      mode: poweroff
+      message: "Provisioning complete, shutting down"
+      condition: true
+    EOF
+    if command -v mkisofs &>/dev/null; then
+        mkisofs -output "$iso" -volid cidata -joliet -rock "$tmpdir/user-data" "$tmpdir/meta-data"
+    elif command -v hdiutil &>/dev/null; then
+        mkdir -p "$tmpdir/iso_root"
+        cp "$tmpdir/user-data" "$tmpdir/meta-data" "$tmpdir/iso_root/"
+        hdiutil makehybrid -iso -joliet -iso-volume-name cidata -o "$iso" "$tmpdir/iso_root/"
+        [ -f "${iso}.iso" ] && mv "${iso}.iso" "$iso"
+    else
+        echo "ERROR: Cannot create cloud-init ISO (no mkisofs or hdiutil)"
+        echo "Install cdrtools: brew install cdrtools"
+        exit 1
+    fi
+    echo "Created cloud-init ISO: $iso"
+
+# Same three Alpine extras as the amd64 seed (see comment there); the console
+# reorder targets grub.cfg since the aarch64 image boots via grub-efi.
+_create-cloud-init-alpine-arm64:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    iso="images/cloud-init-alpine-arm64.iso"
+    [ -f "$iso" ] && exit 0
+    mkdir -p images
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+    cat > "$tmpdir/meta-data" <<'EOF'
+    instance-id: ci-vm-alpine-arm64
+    local-hostname: ci-vm-alpine-arm64
+    EOF
+    cat > "$tmpdir/user-data" <<'EOF'
+    #cloud-config
+    users:
+      - name: ci
+        plain_text_passwd: ci
+        lock_passwd: false
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/bash
+        ssh_authorized_keys: []
+
+    ssh_pwauth: true
+
+    write_files:
+      - path: /etc/cloud/cloud.cfg.d/99-ci-datasource.cfg
+        content: |
+          datasource_list: [ NoCloud, None ]
+      - path: /etc/ssh/sshd_config.d/40-ci-passwordauth.conf
+        content: |
+          PasswordAuthentication yes
+          KbdInteractiveAuthentication no
+
+    package_update: true
+    packages:
+      - bash
+      - sudo
+      - build-base
+      - cmake
+      - libx11-dev
+      - libxext-dev
+      - ncurses-dev
+      - pkgconf
+      - linux-headers
+      - rsync
+      - sshfs
+
+    runcmd:
+      - sed -i 's/console=ttyS0,115200n8 console=ttyAMA0,115200n8 console=tty0/console=tty0 console=ttyS0,115200n8 console=ttyAMA0,115200n8/' /boot/grub/grub.cfg /etc/default/grub
 
     power_state:
       mode: poweroff
