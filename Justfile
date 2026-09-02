@@ -1131,8 +1131,19 @@ _vm64-compile-macos-native:
     set -euo pipefail
     just _action "Building vm64 natively on macOS"
     BUILD_DIR="{{BUILD_MACOS}}"
+    SRC="{{SRCDIR}}/vm64"
+    # The build dir is shared across source trees; CMake refuses to reconfigure
+    # against a different source, so wipe the dir if the cache points elsewhere.
+    CACHE="$BUILD_DIR/CMakeCache.txt"
+    if [ -f "$CACHE" ]; then
+        CACHED_SRC=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$CACHE")
+        if [ "$CACHED_SRC" != "$SRC" ]; then
+            echo "Build dir was configured for $CACHED_SRC; wiping for $SRC"
+            rm -rf "$BUILD_DIR"
+        fi
+    fi
     mkdir -p "$BUILD_DIR"
-    cmake -S "{{SRCDIR}}/vm64" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
+    cmake -S "$SRC" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
     rm -f "$BUILD_DIR/incls/_precompiled.hh.gch"
     cmake --build "$BUILD_DIR" -j{{NCPU}}
     SELFVM="$BUILD_DIR/Self.app/Contents/MacOS/Self"
