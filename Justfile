@@ -192,6 +192,8 @@ fullrun-vm64:
     just vm64-freebsd-arm64 && RESULTS+=("vm64-freebsd-arm64: PASS") || { RESULTS+=("vm64-freebsd-arm64: FAIL"); FAILS=$((FAILS + 1)); }
     just vm64-freebsd-amd64 && RESULTS+=("vm64-freebsd-amd64: PASS") || { RESULTS+=("vm64-freebsd-amd64: FAIL"); FAILS=$((FAILS + 1)); }
     just vm64-netbsd-amd64 && RESULTS+=("vm64-netbsd-amd64: PASS") || { RESULTS+=("vm64-netbsd-amd64: FAIL"); FAILS=$((FAILS + 1)); }
+    just vm64-netbsd-arm64 && RESULTS+=("vm64-netbsd-arm64: PASS") || { RESULTS+=("vm64-netbsd-arm64: FAIL"); FAILS=$((FAILS + 1)); }
+    just vm64-alpine-amd64 && RESULTS+=("vm64-alpine-amd64: PASS") || { RESULTS+=("vm64-alpine-amd64: FAIL"); FAILS=$((FAILS + 1)); }
     just vm64-alpine-arm64 && RESULTS+=("vm64-alpine-arm64: PASS") || { RESULTS+=("vm64-alpine-arm64: FAIL"); FAILS=$((FAILS + 1)); }
 
     ELAPSED=$((SECONDS - START))
@@ -228,6 +230,7 @@ fullrun-vm32:
     just vm32-netbsd-i386 && RESULTS+=("vm32-netbsd-i386: PASS") || { RESULTS+=("vm32-netbsd-i386: FAIL"); FAILS=$((FAILS + 1)); }
     just vm32-netbsd-macppc && RESULTS+=("vm32-netbsd-macppc: PASS") || { RESULTS+=("vm32-netbsd-macppc: FAIL"); FAILS=$((FAILS + 1)); }
     just vm32-netbsd-sparc64 && RESULTS+=("vm32-netbsd-sparc64: PASS") || { RESULTS+=("vm32-netbsd-sparc64: FAIL"); FAILS=$((FAILS + 1)); }
+    just vm32-alpine-x86 && RESULTS+=("vm32-alpine-x86: PASS") || { RESULTS+=("vm32-alpine-x86: FAIL"); FAILS=$((FAILS + 1)); }
 
     ELAPSED=$((SECONDS - START))
     echo ""
@@ -300,8 +303,12 @@ vm64-macos-native:
     set -o pipefail
     if [ $result -eq 0 ]; then
         BUILD_DIR="{{BUILD_MACOS}}"
+        DEST="{{justfile_directory()}}/artifacts/Self-vm64-macos-arm64.app"
         mkdir -p "{{justfile_directory()}}/artifacts"
-        cp -R "$BUILD_DIR/Self.app" "{{justfile_directory()}}/artifacts/Self-vm64-macos-arm64.app" || result=$?
+        # cp -R onto an existing .app dir nests Self.app inside it rather than
+        # replacing it, so drop any previous copy before copying the new one.
+        rm -rf "$DEST"
+        cp -R "$BUILD_DIR/Self.app" "$DEST" || result=$?
     fi
     exit $result
 
