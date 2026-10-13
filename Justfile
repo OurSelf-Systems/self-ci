@@ -149,7 +149,7 @@ _check-src:
 [group('Full Runs')]
 fullrun-all:
     #!/usr/bin/env bash
-    just _check-src
+    just _check-src || exit 1
     RESULTS=()
     FAILS=0
     START=$SECONDS
@@ -181,7 +181,7 @@ fullrun-all:
 [group('Full Runs')]
 fullrun-vm64:
     #!/usr/bin/env bash
-    just _check-src
+    just _check-src || exit 1
     RESULTS=()
     FAILS=0
     START=$SECONDS
@@ -220,7 +220,7 @@ fullrun-vm64:
 [group('Full Runs')]
 fullrun-vm32:
     #!/usr/bin/env bash
-    just _check-src
+    just _check-src || exit 1
     RESULTS=()
     FAILS=0
     START=$SECONDS
@@ -1309,10 +1309,16 @@ _vm32-compile-netbsd-sparc64 port:
 # provision time) is linked --whole-archive so its malloc/free interpose over
 # musl's for the whole process, keeping C-heap pointers below the oop-tag
 # bit — the musl equivalent of the glibc mallopt/__morecore trick.
+#
+# -no-pie: Alpine's gcc links PIE by default, and the i386 runtime assembly
+# (runtime_asm_gcc_i386.S, asmPrims_i386.S) addresses processSemaphore,
+# ReturnTrap, VMString etc. absolutely, so the PIE carries DT_TEXTREL.
+# glibc's loader tolerates text relocations; musl's does not and segfaults
+# in do_relocs before main. A non-PIE executable needs no text relocations.
 _vm32-compile-alpine-x86 port:
     @just _action "Compiling vm32 on Alpine x86"
     @just _rsync {{port}}
-    @just do {{port}} 'cd /tmp/self-build && cmake -S vm -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF -DCMAKE_EXE_LINKER_FLAGS="-Wl,--whole-archive /usr/lib/libphkmalloc.a -Wl,--no-whole-archive" && cmake --build build -j$(nproc)'
+    @just do {{port}} 'cd /tmp/self-build && cmake -S vm -B build -DCMAKE_BUILD_TYPE=Release -DSELF_QUARTZ=OFF -DCMAKE_EXE_LINKER_FLAGS="-no-pie -Wl,--whole-archive /usr/lib/libphkmalloc.a -Wl,--no-whole-archive" && cmake --build build -j$(nproc)'
     @just do {{port}} 'cd /tmp/self-build/objects && echo "saveAs: '"'"'auto.snap'"'"'. _Quit" | ../build/Self -f worldBuilder.self -o morphic'
     @just do {{port}} 'cd /tmp/self-build && echo "_Quit" | build/Self -s objects/auto.snap'
     @just do {{port}} 'cd /tmp/self-build && build/Self -s objects/auto.snap --runAutomaticTests --headless'
@@ -1615,6 +1621,15 @@ provision-netbsd-i386:
     sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR -p "$PORT" ci@localhost \
         'export PATH=/usr/sbin:/sbin:/usr/bin:/bin:/usr/pkg/sbin:/usr/pkg/bin && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/i386/10.0/All && (ifconfig wm0 | grep -q "inet " || sudo dhcpcd wm0) && sudo env PKG_PATH=$PKG_PATH pkg_add pkgin && echo "$PKG_PATH" | sudo tee /usr/pkg/etc/pkgin/repositories.conf > /dev/null && sudo env PKG_PATH=$PKG_PATH pkgin -y update && sudo env PKG_PATH=$PKG_PATH pkgin -y install cmake gcc12 rsync jemalloc bash vim-share'
+    # GCC's PCH writer on 32-bit NetBSD (gcc/config/host-netbsd.c) probes for
+    # free address space with mmap(0xb0000000, size, MAP_FIXED) + munmap, which
+    # silently destroys whatever PaX ASLR happened to place there. About one
+    # PCH generation in four then kills cc1plus with SIGBUS/SIGSEGV. Exempt just
+    # the compiler proper from ASLR; everything else keeps it.
+    just _action "Exempting cc1plus from PaX ASLR (GCC PCH MAP_FIXED bug)"
+    sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p "$PORT" ci@localhost \
+        'sudo /usr/sbin/paxctl +a /usr/libexec/cc1plus && /usr/sbin/paxctl /usr/libexec/cc1plus'
     just _action "Shutting down VM"
     just _stop-vm netbsd-i386-provision.pid "$PORT"
     just _banner "NetBSD i386 image ready"
@@ -1839,6 +1854,15 @@ provision-netbsd-macppc:
     sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR -p "$PORT" ci@localhost \
         'export PATH=/usr/sbin:/sbin:/usr/bin:/bin:/usr/pkg/sbin:/usr/pkg/bin && export PKG_PATH=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/macppc/10.0/All && (ifconfig gem0 | grep -q "inet " || sudo dhcpcd gem0) && sudo env PKG_PATH=$PKG_PATH pkg_add pkgin && echo "$PKG_PATH" | sudo tee /usr/pkg/etc/pkgin/repositories.conf > /dev/null && sudo env PKG_PATH=$PKG_PATH pkgin -y update && sudo env PKG_PATH=$PKG_PATH pkgin -y install cmake gcc12 rsync jemalloc bash vim-share'
+    # GCC's PCH writer on 32-bit NetBSD (gcc/config/host-netbsd.c) probes for
+    # free address space with mmap(0xb0000000, size, MAP_FIXED) + munmap, which
+    # silently destroys whatever PaX ASLR happened to place there. About one
+    # PCH generation in four then kills cc1plus with SIGBUS/SIGSEGV. Exempt just
+    # the compiler proper from ASLR; everything else keeps it.
+    just _action "Exempting cc1plus from PaX ASLR (GCC PCH MAP_FIXED bug)"
+    sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p "$PORT" ci@localhost \
+        'sudo /usr/sbin/paxctl +a /usr/libexec/cc1plus && /usr/sbin/paxctl /usr/libexec/cc1plus'
     just _action "Shutting down VM"
     just _stop-vm netbsd-macppc-provision.pid "$PORT"
     just _banner "NetBSD macppc image ready"
@@ -2877,12 +2901,25 @@ _free-port:
 
 _rsync port:
     #!/usr/bin/env bash
+    set -euo pipefail
     just _check-src
     unset DISPLAY SSH_ASKPASS
+    # Ship .git only to guests that have git: the source tree's CMake runs
+    # `git describe` for the build string and aborts if git is installed but
+    # .git is missing. On every other guest it is 130-200 MB of dead weight,
+    # which matters on the NetBSD VMs where /tmp is a 512 MB tmpfs.
+    GIT_EXCLUDE=""
+    HAS_GIT=$(sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -p {{port}} ci@localhost \
+        'command -v git >/dev/null 2>&1 && echo yes || echo no' 2>/dev/null || true)
+    if [ "$HAS_GIT" = "no" ]; then
+        GIT_EXCLUDE="--exclude=.git"
+    fi
     rsync -az --copy-unsafe-links --delete \
         -e "sshpass -p ci ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {{port}}" \
         --exclude='build-*/' --exclude='build/' \
         --exclude='*.o' --exclude='*.snap' --exclude='*.snap64' \
+        $GIT_EXCLUDE \
         "{{SRCDIR}}/" ci@localhost:/tmp/self-build/
 
 # Optional `iterations` arg controls the wait budget (each iteration ≈ 2 s).
